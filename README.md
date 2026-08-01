@@ -45,6 +45,14 @@ Pin the **moving major tag** `@v1` — not `@main`, and not an exact SHA.
 
 ⚠️ **These tags are action-resolution pointers, not a release channel.** No changelogs, no artifacts, no release notes. A retag reaches every consumer at once — treat it as a review, not a chore.
 
+## The baseline manifest
+
+[`ci-baseline.yml`](ci-baseline.yml) declares the version of every action used by two or more consumers. The gate reads it and fails a pull request pinning a governed action off it.
+
+⚠️ It carries **no organisation specifics** — no repository names, no work-item references, no internal metrics. Version pins are not sensitive; **which of your repositories lags is.** Estate-specific detail (which repos a pin moves, what to re-verify per consumer) lives on the private side and is derived by scanning rather than stored, so there is no list to go stale.
+
+⚠️ An action is governed **only when two or more repositories need it.** A single-consumer action stays local and is ignored by the gate — its absence from the manifest is a statement, not an omission. Do not add one "for completeness": a name in that file reads as governed, and the gate would start enforcing a version on the one repository entitled to choose it.
+
 ## Actions
 
 | action | purpose |

@@ -1,0 +1,140 @@
+# ci-baseline.yml — the one declared source for shared CI action versions.
+#
+# Read by the ci-baseline gate, which fails a pull request pinning a governed
+# action off this manifest. A violation message cites this file by path, so its
+# location is part of the contract.
+#
+# ⚠️ WHY A MANIFEST RATHER THAN A CONVENTION. An unenforced convention decays
+# silently, and the decay is invisible *because CI stays green*. Before this
+# file existed, one organisation's repositories carried three different versions
+# of `actions/checkout`, three of `actions/setup-go` and two of
+# `actions/upload-artifact` — and two repositories used two versions of the same
+# action INSIDE THEMSELVES, so there was no "current version" to read off even
+# locally.
+#
+# ⚠️ AND THE DRIFT IS BEHAVIOURAL, NOT COSMETIC. `checkout` v4 -> v7 changes the
+# Node runtime and default fetch behaviour; `setup-go` v5 -> v7 changes caching
+# defaults. Two repositories whose workflows look identical do not run the same
+# CI — so results across them are not comparable, and a gate can pass in one and
+# fail in another on the same input.
+#
+# This file is PUBLIC, and deliberately carries no organisation specifics: no
+# repository names, no work-item references, no internal metrics. Version pins
+# are not sensitive; which of your repositories lags is. The mechanism is
+# public, the estate detail is not — the same split the private-content firewall
+# uses for its own patterns.
+
+version: 1
+
+# ---------------------------------------------------------------------------
+# Governed actions — anything used by two or more repositories
+# ---------------------------------------------------------------------------
+#
+# ⚠️ A pin is NOT max(seen). Taking the highest observed version is wrong twice
+# over, because a bump changes behaviour in repositories that currently pass.
+# Every pin here carries its reason, and every repository the pin MOVES must be
+# re-run green before the change is complete. A bump that breaks a passing
+# repository is not a baseline.
+
+actions:
+  actions/checkout:
+    pin: v7
+    why: >-
+      Latest major, and a moving major tag is published so `v7` tracks patches
+      without a re-pin. ⚠️ Consumers that fetch tags need care across this
+      bump: checkout leaves the tag REF but not necessarily the annotated tag
+      OBJECT, and for a release workflow the annotation IS the release notes. A
+      workflow carrying an explicit tag-fetch workaround must re-verify whether
+      it is still needed or now wrong — the failure mode is a silently empty
+      release, which no test catches.
+
+  actions/setup-go:
+    pin: v7
+    why: >-
+      Latest major with a moving major tag. ⚠️ Verify caching across this bump:
+      an explicit `cache: true` should survive, but the CACHE-KEY computation is
+      what to check. A silently changed key means a silently cold cache, which
+      presents as nothing except slower jobs. Prefer `go-version-file: go.mod`
+      over a pinned version, so the toolchain follows the module.
+
+  actions/upload-artifact:
+    pin: v7
+    why: Latest major with a moving major tag.
+
+  astral-sh/setup-uv:
+    pin: v9.0.0
+    exact: true
+    why: >-
+      ⚠️ EXACT pin, unlike every other entry: this action publishes NO moving
+      major tag, so `@v9` does not resolve. Pinned once here, a dependency bot
+      updates one place rather than one per consumer.
+
+  arqtiqa/arqtos-actions:
+    pin: v1
+    why: >-
+      This repository's own composite actions, referenced as
+      `arqtiqa/arqtos-actions/.github/actions/<name>@v1`. A moving major tag:
+      `@main` would put every commit live in every consumer with no review in
+      any of them, and an exact SHA reintroduces one bump per consumer — the
+      cost a single source exists to remove. ⚠️ The tag moves on a DELIBERATE
+      act, which makes retagging the reviewable moment, not a chore.
+
+# ---------------------------------------------------------------------------
+# The two-consumer rule
+# ---------------------------------------------------------------------------
+#
+# ⚠️ An action is governed here only when TWO OR MORE repositories need it.
+# Centralising by default relocates coupling into a shared repository and makes
+# it a dumping ground. A single-consumer action stays local and is IGNORED by
+# the gate — its absence from this file is a statement, not an omission.
+#
+# Do not list single-consumer actions here even "for completeness": a name in
+# this file reads as governed, and the gate would start enforcing a version on a
+# repository that is the only one entitled to choose it.
+
+# ---------------------------------------------------------------------------
+# Job timeouts
+# ---------------------------------------------------------------------------
+#
+# ⚠️ A default of 30 minutes, not the platform's 360. A job that has run for
+# half an hour is wedged, not busy, and 360 minutes of a wedged job is six hours
+# of hidden breakage. Measured before setting this: not one workflow in the
+# estate declared `timeout-minutes` at all, so every job silently inherited 360.
+#
+# ⚠️ AN OVERRIDE MUST BE EXPRESSIBLE, and this is not a convenience. Some jobs
+# legitimately scale with their input — a mutation-survey gate runs its suite
+# once per mutation, by design. Without an override the first such job either
+# breaks or is exempted, and an exemption granted for a GOOD reason is the
+# precedent that later launders bad ones.
+#
+# ⚠️ AND FOR SUCH A JOB, A TIMEOUT KILL IS INDISTINGUISHABLE FROM A PASS when
+# results stream per-item as they complete. Two consequences: the timeout must
+# not be reachable by simply adding items, and the job must fail loudly on kill
+# rather than report partial success.
+
+timeouts:
+  default_minutes: 30
+  overridable: true
+  requires_reason: true
+
+# ---------------------------------------------------------------------------
+# Exceptions
+# ---------------------------------------------------------------------------
+#
+# A repository that must deviate declares it BESIDE ITS OWN WORKFLOWS:
+#
+#     # .github/ci-baseline-exceptions.yml
+#     exceptions:
+#       - action: actions/checkout
+#         pin: v5
+#         why: "<the reason>"
+#         expires: 2026-12-31
+#
+# ⚠️ In-repo, so it appears in the pull request that adds it and someone sees
+# it. An exception configured centrally, or inferred from silence, is how a
+# baseline decays into a suggestion.
+#
+# ⚠️ `expires` is REQUIRED. An exception with no date is a permanent carve-out
+# wearing the costume of a temporary one.
+
+exceptions_file: .github/ci-baseline-exceptions.yml
