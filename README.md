@@ -57,6 +57,7 @@ Pin the **moving major tag** `@v1` — not `@main`, and not an exact SHA.
 
 | action | purpose |
 |---|---|
+| [`firewall`](.github/actions/firewall) | scans tracked files against a **caller-supplied** denylist — ships none, by design |
 | [`python-toolchain`](.github/actions/python-toolchain) | sets up `uv` at the governed version — the only place that pin lives |
 | [`resolve-canary`](.github/actions/resolve-canary) | proves cross-repository action resolution still works — see its README |
 

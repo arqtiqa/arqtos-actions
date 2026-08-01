@@ -1,0 +1,74 @@
+name: 'Private-content firewall'
+description: 'Scan tracked files against a caller-supplied denylist. Fails when any pattern matches.'
+author: 'arqtiqa/arqtos-actions'
+
+# ⚠️ THIS ACTION SHIPS NO DENYLIST, AND THAT IS THE POINT.
+#
+# A denylist is a list of the things it protects, so a copy committed here —
+# a PUBLIC repository — would publish exactly what it exists to guard. The
+# caller supplies the path, and the caller's denylist stays scoped to the
+# audience of the caller's repository.
+#
+# That asymmetry is the whole design: THE LOGIC IS SHARED, THE DATA IS NOT.
+# One repository's list legitimately differs from another's — a repo readable
+# by people outside the organisation must not carry maintainer-identity
+# patterns, while an internal-only repo should. Centralising the data would
+# force the union, which is the disclosure.
+#
+# ⚠️ AND A MISSING DENYLIST IS A MISCONFIGURATION, NEVER "CLEAN". The script
+# exits 2 in that case, because a scan with nothing to scan against reports
+# every file clean — which is worse than not running at all, since it looks
+# like a pass. Do NOT add a default denylist to make this "convenient".
+
+inputs:
+  denylist:
+    description: >-
+      Path to the caller's denylist. REQUIRED — there is no default and no
+      bundled fallback. An absent or unreadable file exits 2.
+    required: true
+  files:
+    description: >-
+      Newline- or space-separated file list to scan. Defaults to all tracked
+      files (`git ls-files`).
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Scan tracked files against the caller's denylist
+      shell: bash
+      env:
+        INPUT_DENYLIST: ${{ inputs.denylist }}
+        INPUT_FILES: ${{ inputs.files }}
+      run: |
+        set -euo pipefail
+
+        # Locate the script relative to THIS action, not the caller's cwd.
+        script="${{ github.action_path }}/check-private-content.sh"
+        if [[ ! -x "$script" ]]; then
+          echo "✗ firewall: $script is missing or not executable" >&2
+          exit 2
+        fi
+
+        # ⚠️ Checked here as well as in the script. GitHub does NOT enforce
+        # `required: true` for composite-action inputs, so the declaration above
+        # is documentation, not a guarantee. Without this an empty input would
+        # fall through to the script's own default-path resolution, and the
+        # failure would name a path the caller never chose.
+        if [[ -z "$INPUT_DENYLIST" ]]; then
+          echo "✗ firewall: no denylist supplied." >&2
+          echo "  This action ships none: a denylist committed to a public repo" >&2
+          echo "  publishes what it protects. Pass the path to your own." >&2
+          exit 2
+        fi
+        if [[ ! -f "$INPUT_DENYLIST" ]]; then
+          echo "✗ firewall: denylist not found at $INPUT_DENYLIST" >&2
+          exit 2
+        fi
+
+        if [[ -n "$INPUT_FILES" ]]; then
+          printf '%s\n' $INPUT_FILES | xargs "$script" "--denylist=$INPUT_DENYLIST"
+        else
+          git ls-files | xargs "$script" "--denylist=$INPUT_DENYLIST"
+        fi
