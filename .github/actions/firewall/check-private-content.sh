@@ -17,6 +17,7 @@ denylist="$DEFAULT_DENYLIST"
 
 files=()
 all_tracked=0
+files0=0
 for arg in "$@"; do
   case "$arg" in
     --denylist=*)
@@ -24,6 +25,15 @@ for arg in "$@"; do
       ;;
     --all-tracked)
       all_tracked=1
+      ;;
+    --files0)
+      # ⚠️ Read a NUL-delimited file list from stdin. This exists so the caller
+      # never needs `xargs`: xargs SUBSTITUTES ITS OWN EXIT STATUS, mapping the
+      # script's 2 (misconfigured) onto 1 (matched) — GNU to 123, BSD to 1 —
+      # so a gate that did not run properly became indistinguishable from a
+      # caught leak. The three-state contract only survives if this process is
+      # the one whose status the caller sees.
+      files0=1
       ;;
     --help|-h)
       sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -59,8 +69,33 @@ if (( all_tracked )); then
   done < <(git ls-files -z)
 fi
 
+if (( files0 )); then
+  while IFS= read -r -d '' f; do
+    [[ -n "$f" ]] && files+=("$f")
+  done
+fi
+
 if [[ ! -f "$denylist" ]]; then
   echo "✗ check-private-content: denylist not found at $denylist" >&2
+  exit 2
+fi
+
+# ⚠️ EXISTING IS NOT ENOUGH — IT MUST CONTAIN RULES.
+#
+# The guard above tested only that the file is present. A file that is present
+# but empty of patterns (zero-byte, all-comment, all-whitespace) made every scan
+# report CLEAN: nothing to compare against means nothing matches, and the result
+# is indistinguishable from safety. A truncated sync, a bad merge, or a debugging
+# session that commented every line out disarms the scan silently.
+#
+# This is the same rule `check-estate-identifiers` already enforces for its own
+# pattern list — "a run with no patterns reports every scan clean and must never
+# be usable as a gate" — applied where it was missing.
+rule_count=$(grep -cvE '^[[:space:]]*(#|$)' "$denylist" || true)
+if [[ "${rule_count:-0}" -eq 0 ]]; then
+  echo "✗ check-private-content: $denylist exists but contains no rules." >&2
+  echo "  A scan with nothing to scan against passes every file, so this is a" >&2
+  echo "  misconfiguration (exit 2), not a clean result." >&2
   exit 2
 fi
 

@@ -78,8 +78,13 @@ runs:
           # ⚠️ A path containing a NEWLINE cannot be expressed through this input
           # at all — use the default all-tracked mode for such a repo rather than
           # enumerating files here.
+          # ⚠️ NO xargs. It substitutes its OWN exit status — GNU maps any child
+          # 1..125 to 123, BSD to 1 — so the script's 2 (misconfigured) arrived
+          # as 1 (matched), making a gate that did not run properly look like a
+          # gate that caught something. The script now reads the NUL-delimited
+          # list itself, so the status the caller sees is the script's.
           printf '%s' "$INPUT_FILES" | tr '\n' '\0' \
-            | xargs -0 -r "$script" "--denylist=$INPUT_DENYLIST"
+            | "$script" "--denylist=$INPUT_DENYLIST" --files0
         else
           "$script" "--denylist=$INPUT_DENYLIST" --all-tracked
         fi
