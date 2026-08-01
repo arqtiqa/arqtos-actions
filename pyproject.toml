@@ -1,0 +1,23 @@
+# Python toolchain for this repository's own gate and its tests.
+#
+# ⚠️ This is NOT a package. arqtos-actions ships composite actions; the only
+# Python here is the ci-baseline gate and the tests that prove it fails when it
+# should. The [project] table exists because that is where requires-python and
+# the dev group live.
+#
+# ⚠️ Every invocation is `uv run --locked`, never a bare interpreter — the gate
+# in this very repository rejects a bare interpreter, and a gate that violates
+# its own rule is not a gate. --locked and not --frozen: --frozen uses the lock
+# without VALIDATING it, so an un-locked dependency is ignored and the run
+# passes; only --locked errors on a stale lock.
+[project]
+name = "arqtos-actions-tools"
+version = "0.0.0"
+description = "The ci-baseline gate and its tests. Not published; the version is inert."
+requires-python = ">=3.9"
+
+[dependency-groups]
+dev = ["pyyaml", "pytest"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

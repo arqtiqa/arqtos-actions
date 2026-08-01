@@ -1,0 +1,54 @@
+name: 'CI baseline gate'
+description: 'Reject a bare interpreter, an off-baseline action pin, or two versions of one action.'
+author: 'arqtiqa/arqtos-actions'
+
+# ⚠️ THIS GATE MAY NOT USE WHAT IT FORBIDS, which constrains how it gets an
+# interpreter. Not `actions/setup-python` — it rejects that. Not a bare
+# `python3` — it rejects that too, and it is not a version, it is whatever is
+# first on the runner's PATH. Not `astral-sh/setup-uv` directly — that would
+# create a SECOND copy of a pin this repository keeps exactly one of.
+#
+# So it composes python-toolchain, BY FULL REFERENCE. Measured, not assumed: a
+# relative `uses: ./…` inside a composite action resolves against the CONSUMER's
+# checkout, not this repository —
+#   "Can't find 'action.yml' under /home/runner/work/<consumer>/<consumer>/…"
+# A full owner/repo/path@ref reference works.
+#
+# ⚠️ Composed at @v1 rather than a SHA, unlike the firewall. The distinction is
+# the failure mode: if this gate cannot get an interpreter it ERRORS — loudly,
+# and nothing is scanned. The firewall can return a green check while scanning
+# nothing, which is why that one is SHA-pinned and this one is not.
+
+inputs:
+  manifest:
+    description: >-
+      Path to ci-baseline.yml. Defaults to the copy inside this action, so a
+      consumer normally supplies nothing and cannot drift from the baseline by
+      holding a stale copy of it.
+    required: false
+    default: ''
+  root:
+    description: 'Repository root to scan. Defaults to the workspace.'
+    required: false
+    default: '.'
+
+runs:
+  using: composite
+  steps:
+    - uses: arqtiqa/arqtos-actions/.github/actions/python-toolchain@v1
+
+    - name: Enforce the CI baseline
+      shell: bash
+      env:
+        INPUT_MANIFEST: ${{ inputs.manifest }}
+        INPUT_ROOT: ${{ inputs.root }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        manifest="${INPUT_MANIFEST:-$ACTION_PATH/../../../ci-baseline.yml}"
+        # ⚠️ Deliberately NOT falling back to "scan nothing" if the manifest is
+        # absent — the gate itself exits 2 in that case. A gate that skips when
+        # its input is missing is the vacuous pass it exists to prevent.
+        uv run --locked --project "$ACTION_PATH/../../.." \
+          python "$ACTION_PATH/check_ci_baseline.py" \
+          --manifest "$manifest" --root "$INPUT_ROOT"

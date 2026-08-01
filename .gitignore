@@ -1,0 +1,5 @@
+# Python build/run artefacts from the gate and its tests.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/

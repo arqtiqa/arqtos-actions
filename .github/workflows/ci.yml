@@ -1,0 +1,40 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  gate-self-tests:
+    name: gate self-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      # ⚠️ Composed by RELATIVE path here, which is legal because this is a
+      # WORKFLOW rather than a composite action. The relative form fails only
+      # from inside a composite action, where it resolves against the consumer.
+      - uses: ./.github/actions/python-toolchain
+
+      - name: the gate must FAIL on broken input, not merely pass on good
+        run: uv run --locked pytest tests/ -q
+
+  dogfood:
+    name: the gate, on this repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      # ⚠️ This repo is subject to its own gate. If the baseline is wrong, or
+      # the gate is wrong, this job is the first place it shows.
+      - uses: ./.github/actions/ci-baseline
