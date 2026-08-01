@@ -1,0 +1,9 @@
+# Two identities, deliberately.
+#
+# GitHub never counts a pull request author's own review. Agent-authored PRs in
+# this estate are authored by one identity, while a CODEOWNER approval is
+# required to merge — so a CODEOWNERS naming only the author identity produces a
+# repository whose own PRs can never be approved.
+#
+# Admin permission is NOT code ownership; it does not satisfy the requirement.
+* @mw-aqa @mw-io

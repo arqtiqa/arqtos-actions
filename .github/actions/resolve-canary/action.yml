@@ -1,0 +1,23 @@
+name: 'Resolve canary'
+description: 'Succeeds if it ran at all. Proves a consumer can resolve an action from this repository.'
+author: 'arqtiqa/arqtos-actions'
+
+# The point of this action is that it does almost nothing.
+#
+# Cross-repository action resolution is a CONFIGURATION property, not a code
+# property: it depends on host visibility and the org access policy, and it
+# fails BEFORE any step runs, with `Unable to resolve action`. So it cannot be
+# covered by a test inside this repository — only by a consumer referencing it.
+#
+# Referencing this action is therefore the cheapest possible assertion that
+# resolution works. It has no inputs to get wrong and no failure mode of its
+# own, so a failure means resolution, not logic.
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        echo "resolve-canary: resolved and executed."
+        echo "  consumer repo : ${GITHUB_REPOSITORY}"
+        echo "  action source : arqtiqa/arqtos-actions"
+        echo "If you can read this, cross-repository action resolution works from here."
