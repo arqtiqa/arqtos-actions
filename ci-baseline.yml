@@ -64,10 +64,19 @@ actions:
   astral-sh/setup-uv:
     pin: v9.0.0
     exact: true
+    direct_reference: forbidden
     why: >-
       ⚠️ EXACT pin, unlike every other entry: this action publishes NO moving
-      major tag, so `@v9` does not resolve. Pinned once here, a dependency bot
-      updates one place rather than one per consumer.
+      major tag, so `@v9` does not resolve.
+      ⚠️ AND CONSUMERS MUST NOT REFERENCE IT DIRECTLY — use
+      `.github/actions/python-toolchain@v1`, which wraps it. This is the rule
+      that keeps the pin a SINGLE source instead of a second one: a composite
+      action cannot read this manifest to discover its own version, so the
+      literal must live inside the action. Forbidding direct references is what
+      guarantees it lives there AND NOWHERE ELSE. A direct reference is a gate
+      violation, not a style preference — it re-creates the drift surface this
+      file exists to remove, and it was duplicated 11 times before the wrapper
+      existed.
 
   arqtiqa/arqtos-actions:
     pin: v1

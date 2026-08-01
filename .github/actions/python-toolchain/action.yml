@@ -1,0 +1,60 @@
+name: 'Python toolchain (uv)'
+description: 'Set up uv at the governed version, cached. The single place that pin lives.'
+author: 'arqtiqa/arqtos-actions'
+
+# ⚠️ THE VERSION BELOW IS THE ONLY PLACE IT LIVES.
+#
+# A composite action cannot read ci-baseline.yml to discover its own pin — the
+# `uses:` line is resolved before any step runs. So the pin is literal here, and
+# the manifest's job is to say that CONSUMERS MUST NOT REFERENCE setup-uv
+# DIRECTLY. That is what keeps this a single source rather than a second one:
+# there is exactly one `astral-sh/setup-uv@` string in the organisation, and it
+# is this one.
+#
+# ⚠️ EXACT pin, not a moving major: astral-sh/setup-uv publishes NO moving major
+# tag — `v9` and `v8` both 404, only `v7` exists — so `@v9` would not resolve.
+# A dependency bot updates this one line; before this action existed the same
+# string was duplicated 11 times across two repositories.
+
+inputs:
+  enable-cache:
+    description: >-
+      Cache the uv download and resolved environments. Default true — every
+      known consumer wants it, and a cold cache is pure waste on a gate that
+      runs per pull request.
+    required: false
+    default: 'true'
+  python-version-file:
+    description: >-
+      File declaring the interpreter. Left empty by default so uv applies its
+      own discovery (`.python-version`, then `pyproject.toml`'s
+      requires-python). ⚠️ Set this only when a repository genuinely differs —
+      naming it here when the default already finds it re-creates the
+      per-repo duplication this action removes.
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Set up uv
+      uses: astral-sh/setup-uv@v9.0.0
+      with:
+        enable-cache: ${{ inputs.enable-cache }}
+        python-version-file: ${{ inputs.python-version-file }}
+
+    - name: State the contract
+      shell: bash
+      run: |
+        echo "python-toolchain: uv ready."
+        echo
+        echo "⚠️  Invoke every command as: uv run --locked <cmd>"
+        echo
+        echo "    --locked   errors if the lockfile is stale.  <- the one you want"
+        echo "    --frozen   uses the lock but NEVER VALIDATES it, so a dependency"
+        echo "               added and not locked is ignored and the run PASSES."
+        echo "    (neither)  silently RE-LOCKS, rewriting the lockfile as a side"
+        echo "               effect of a test run."
+        echo
+        echo "This action deliberately does not run anything for you: the flag is"
+        echo "the decision, and hiding it here would hide the decision."

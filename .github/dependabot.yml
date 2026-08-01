@@ -1,0 +1,19 @@
+# ⚠️ This repository holds the organisation's single copy of several action
+# pins, so a stale pin here is stale EVERYWHERE. That inverts the usual
+# calculus: dependabot is not hygiene here, it is the mechanism that keeps the
+# single source from becoming a single stale source.
+#
+# `astral-sh/setup-uv` matters most. It publishes no moving major tag, so its
+# pin is EXACT and cannot drift forward on its own — unlike the `@v7` pins,
+# which track patches by themselves. It is the one pin that goes stale silently.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    # Composite actions live under .github/actions/*, which dependabot scans as
+    # part of `directory: /` for the github-actions ecosystem.
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: chore
