@@ -67,8 +67,19 @@ runs:
           exit 2
         fi
 
+        # ⚠️ The default path delegates the file listing TO THE SCRIPT, which
+        # builds it NUL-delimited from `git ls-files -z`. It used to be
+        # `git ls-files | xargs` right here, and that silently dropped every
+        # tracked path containing a space, tab, quote or backslash — reporting
+        # CLEAN on files it never opened. Logic in YAML cannot be tested, which
+        # is why that survived; the script's version is covered by tests.
         if [[ -n "$INPUT_FILES" ]]; then
-          printf '%s\n' $INPUT_FILES | xargs "$script" "--denylist=$INPUT_DENYLIST"
+          # An explicit list is newline-delimited, so a path may contain SPACES.
+          # ⚠️ A path containing a NEWLINE cannot be expressed through this input
+          # at all — use the default all-tracked mode for such a repo rather than
+          # enumerating files here.
+          printf '%s' "$INPUT_FILES" | tr '\n' '\0' \
+            | xargs -0 -r "$script" "--denylist=$INPUT_DENYLIST"
         else
-          git ls-files | xargs "$script" "--denylist=$INPUT_DENYLIST"
+          "$script" "--denylist=$INPUT_DENYLIST" --all-tracked
         fi

@@ -16,10 +16,14 @@ DEFAULT_DENYLIST="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/private-content-
 denylist="$DEFAULT_DENYLIST"
 
 files=()
+all_tracked=0
 for arg in "$@"; do
   case "$arg" in
     --denylist=*)
       denylist="${arg#--denylist=}"
+      ;;
+    --all-tracked)
+      all_tracked=1
       ;;
     --help|-h)
       sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -32,6 +36,28 @@ for arg in "$@"; do
       ;;
   esac
 done
+
+# ⚠️ THE FILE LIST IS BUILT HERE, NOT BY THE CALLER, AND IT IS NUL-DELIMITED.
+#
+# This mode exists because the listing used to live in the workflow as
+#     git ls-files | xargs check-private-content.sh
+# and that is broken: `git ls-files` without -z emits newline-separated paths and
+# `xargs` splits on whitespace, so ANY tracked file whose path contained a space,
+# tab, quote or backslash was never passed to the scanner — and the scan reported
+# CLEAN. A path the scanner never receives cannot match anything.
+#
+# The Go implementation already carried this exact fix
+# (internal/firewall/firewall.go:900, "CRITICAL (arqtos-cli#839 review): this
+# MUST run with `-z` and split on NUL") and it never crossed to the shell.
+#
+# ⚠️ It survived because the logic lived in YAML, where nothing could test it.
+# Moving it into the script is the durable half of the fix; -z is only the
+# immediate repair. Anything a caller cannot test, a caller cannot trust.
+if (( all_tracked )); then
+  while IFS= read -r -d '' f; do
+    files+=("$f")
+  done < <(git ls-files -z)
+fi
 
 if [[ ! -f "$denylist" ]]; then
   echo "✗ check-private-content: denylist not found at $denylist" >&2
