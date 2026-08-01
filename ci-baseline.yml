@@ -87,6 +87,40 @@ actions:
       any of them, and an exact SHA reintroduces one bump per consumer — the
       cost a single source exists to remove. ⚠️ The tag moves on a DELIBERATE
       act, which makes retagging the reviewable moment, not a chore.
+    per_action_overrides:
+      # ⚠️ THE FIREWALL IS PINNED TO A COMMIT SHA, NOT THE MOVING TAG.
+      #
+      # Not inconsistency — the actions differ in HOW THEY FAIL, and only this
+      # one fails silently:
+      #
+      #   python-toolchain   compromised -> the build BREAKS. uv is missing,
+      #                      tests do not run. Loud, immediate, unmissable.
+      #   resolve-canary     compromised -> breaks loudly; trivial by design.
+      #   firewall           compromised -> ⚠️ CAN REPORT CLEAN. The scan simply
+      #                      finds nothing, and a green check appears on a repo
+      #                      whose private-content gate is no longer running.
+      #
+      # A gate that fails silently-clean is the failure mode this whole file
+      # exists to remove, reappearing one level up — the same shape as a missing
+      # denylist reading as clean, which is why THAT case is an exit-2.
+      #
+      # So the N-bumps cost the moving tag exists to avoid is paid ONCE, for the
+      # one action where nobody would notice the failure. Everything else keeps
+      # `@v1`.
+      #
+      # ⚠️ A consumer of the firewall action MUST use a 40-char SHA. The gate
+      # treats `@v1` on the firewall as a violation, and a SHA on any other
+      # action as one too — the exception is deliberate and narrow, not a
+      # loosening.
+      firewall:
+        pin_style: commit-sha
+        why: >-
+          The only shared action that is a security GATE. Its failure mode is a
+          green check rather than a broken build, so it does not get a moving
+          reference. Bump it deliberately, reviewing the upstream diff.
+        annotate: >-
+          Pin as `<40-char-sha>  # v1` so a human can still read which release
+          it corresponds to.
 
 # ---------------------------------------------------------------------------
 # The two-consumer rule

@@ -3,10 +3,26 @@
 Scans tracked files against a **caller-supplied** denylist. Fails when any pattern matches.
 
 ```yaml
-- uses: arqtiqa/arqtos-actions/.github/actions/firewall@v1
+- uses: arqtiqa/arqtos-actions/.github/actions/firewall@<40-char-sha>  # v1
   with:
     denylist: .github/scripts/private-content-denylist.txt
 ```
+
+## ⚠️ Pin this action to a commit SHA — it is the one that does not use `@v1`
+
+Every other action here takes the moving `@v1` tag. This one does not, and the reason is **how it fails**, not consistency:
+
+| action | if compromised or mis-retagged |
+|---|---|
+| `python-toolchain` | the build **breaks loudly** — the toolchain is missing, tests do not run |
+| `resolve-canary` | breaks loudly, and is trivial by construction |
+| **`firewall`** | ⚠️ **can report CLEAN** — the scan simply finds nothing |
+
+A compromised firewall action does not announce itself. It puts a **green check** on a repository whose private-content gate is no longer running. That is the silent-failure mode this action's own exit-code contract exists to prevent — the same shape as a missing denylist reading as clean — arriving one level up.
+
+So the cost a moving tag exists to avoid, one bump per consumer per change, is paid **once**, for the one action where nobody would notice the failure.
+
+Annotate the pin with the tag (`# v1`) so a human can still read which release it is.
 
 ## ⚠️ It ships no denylist, and that is the design
 
