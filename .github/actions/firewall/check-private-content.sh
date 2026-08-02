@@ -138,7 +138,25 @@ while IFS= read -r line; do
   [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
 
   # `grep -I` skips binaries; `-E` extended regex; `-n` line numbers; `-H` filename.
-  if matches=$(grep -nIHE "$line" "${existing_files[@]}" 2>/dev/null); then
+  #
+  # ⚠️ `-e` IS LOAD-BEARING — DO NOT REMOVE IT (arqtos-cli#1069).
+  #
+  # Without it, any pattern BEGINNING WITH A HYPHEN is parsed by grep as an
+  # OPTION, not a pattern. grep then exits 2 with "unrecognized option", the
+  # `2>/dev/null` swallows the message, and the `if` reads the non-zero status
+  # as "no match" — so the rule is silently NEVER APPLIED and the file reports
+  # CLEAN.
+  #
+  # This was live: the PEM private-key rule (`-----BEGIN ... PRIVATE KEY-----`)
+  # begins with five hyphens, so the highest-severity class in the secrets tier
+  # was unenforced in CI on every repo using this action, while the Go scanner
+  # matched it locally. CI is the boundary guarding the PUBLIC repos, so the
+  # weaker side was the one that mattered.
+  #
+  # Found by the cross-implementation parity test (arqtos-cli#1069) on its
+  # first run — nothing else could have found it, because both sides of the
+  # pre-existing parity test were Go.
+  if matches=$(grep -nIHE -e "$line" "${existing_files[@]}" 2>/dev/null); then
     if [[ -n "$matches" ]]; then
       echo "✗ pattern: $line" >&2
       printf '%s\n' "$matches" | sed 's/^/    /' >&2

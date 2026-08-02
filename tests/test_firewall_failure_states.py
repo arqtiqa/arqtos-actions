@@ -102,3 +102,59 @@ def test_the_explicit_list_is_NUL_safe_so_a_space_in_a_path_still_scans(tmp_path
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     p = run(r, "--denylist=dl.txt", "--files0", stdin=b"has space.md\0")
     assert p.returncode == MATCHED
+
+
+# --- #1069: a pattern beginning with a hyphen must still be APPLIED ----------
+#
+# ⚠️ Third instance of this file's own shape: an error erased before anyone
+# sees it. Without `-e`, grep parses a leading-hyphen pattern as an OPTION,
+# exits 2 with "unrecognized option", `2>/dev/null` discards the message, and
+# the surrounding `if` reads the failure as "no match" — the rule is silently
+# never applied and the scan reports CLEAN.
+#
+# This was live. The PEM private-key rule begins with five hyphens, so the
+# highest-severity class in the secrets tier was unenforced in CI on every
+# consuming repo, while the Go scanner matched it locally. CI is the boundary
+# guarding the PUBLIC repos, which makes the weaker side the one that counts.
+#
+# These run on the CI image's GNU grep, which is what the action actually uses
+# — the divergence was first seen against BSD grep, and this is what pins the
+# behaviour on the engine that matters.
+
+HYPHEN_RULE = "-" * 5 + "BEGIN [A-Z ]*PRIVATE KEY" + "-" * 5
+
+
+def test_leading_hyphen_pattern_is_applied_not_swallowed(tmp_path: Path) -> None:
+    r = repo(tmp_path, HYPHEN_RULE + "\n")
+    (r / "leak.md").write_text("-" * 5 + "BEGIN OPENSSH PRIVATE KEY" + "-" * 5 + "\n")
+    p = run(r, "--denylist=dl.txt", "--all-tracked")
+    assert p.returncode == MATCHED, (
+        "a denylist rule beginning with a hyphen must be APPLIED. Got "
+        f"{p.returncode}; without `-e` grep treats it as an option, the error is "
+        "discarded, and the scan reports clean.\n"
+        f"stderr:\n{p.stderr.decode()}"
+    )
+
+
+def test_leading_hyphen_pattern_still_reports_clean_when_absent(tmp_path: Path) -> None:
+    # The mirror case. Without it, a rule that matched EVERYTHING would also
+    # satisfy the test above — passing for the wrong reason.
+    r = repo(tmp_path, HYPHEN_RULE + "\n")
+    (r / "leak.md").write_text("ordinary prose, no credential material\n")
+    p = run(r, "--denylist=dl.txt", "--all-tracked")
+    assert p.returncode == CLEAN, (
+        f"expected clean, got {p.returncode}\nstderr:\n{p.stderr.decode()}"
+    )
+
+
+def test_hyphen_rule_does_not_mask_a_normal_rule(tmp_path: Path) -> None:
+    # A leading-hyphen rule sits in the same loop as every other rule. If grep
+    # aborts on it in a way that terminates the loop, later rules never run —
+    # so assert an ordinary rule after it still fires.
+    r = repo(tmp_path, HYPHEN_RULE + "\n" + PROBE + "\n")
+    (r / "leak.md").write_text(f"leak {PROBE} here\n")
+    p = run(r, "--denylist=dl.txt", "--all-tracked")
+    assert p.returncode == MATCHED, (
+        "a rule following a leading-hyphen rule must still be evaluated; got "
+        f"{p.returncode}\nstderr:\n{p.stderr.decode()}"
+    )
