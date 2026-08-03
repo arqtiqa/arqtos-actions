@@ -1,0 +1,51 @@
+# Denylist for the private-content firewall — PUBLIC repository.
+#
+# The scanning logic lives in a shared composite action; only this data is local.
+# That split is deliberate: a denylist is a list of the things it protects, so
+# centralising the data would force the union of every repository's list, and the
+# union is the disclosure.
+#
+# This file therefore holds only GENERIC secret-shape and private-network
+# patterns. It deliberately omits any pattern that would identify a person, a
+# machine or an organisation — such a pattern IS a description of the thing it
+# guards, so committing it to a public repository publishes it.
+#
+# Do NOT add patterns here to "keep it in step" with an internal list. The
+# difference is the design, not drift.
+#
+# ⚠️ THIS FILE IS NOT THE FIREWALL ACTION'S DEFAULT DENYLIST, and this is the
+# one repository where that confusion is possible — the action lives here too.
+#
+# The action ships NO denylist and must never ship one: a bundled fallback
+# would make a caller's missing list look like a clean scan, and would force
+# the union of every caller's patterns into a public repo. See
+# `.github/actions/firewall/action.yml`.
+#
+# This is arqtos-actions' OWN caller-supplied list, scoped to its OWN audience,
+# read only by this repo's `.github/workflows/firewall.yml`. It sits under
+# `.github/scripts/` — the callers' convention — precisely so it is never
+# mistaken for action data under `.github/actions/`.
+#
+#   a new secret-shape pattern (a service's token format)  -> belongs here
+#   anything naming or describing a person/host/org        -> does NOT
+#
+# See ./README.md for the exit-code contract; note that a MISSING denylist exits
+# 2 and must never read as clean.
+
+\b(192\.168\.|10\.0\.|10\.1\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)[0-9]{1,3}\.[0-9]{1,3}\b
+ghp_[A-Za-z0-9]{36,}
+gho_[A-Za-z0-9]{36,}
+github_pat_[A-Za-z0-9_]{82,}
+lin_api_[A-Za-z0-9]{40,}
+op://[A-Za-z0-9_-]+/[A-Za-z0-9_-]+
+
+# Added 2026-08-01 (arqtos-cli#1078): secret-MATERIAL shapes the Go strict
+# tier was missing — it caught GitHub PATs while missing AWS access keys and
+# PEM private key blocks entirely. Credential FORMATS, so they belong in
+# every list including the public ones; the audience split is about IDENTITY
+# patterns, not credential shapes.
+ghu_[A-Za-z0-9]{36,}
+ghs_[A-Za-z0-9]{36,}
+ghr_[A-Za-z0-9]{36,}
+\bAKIA[0-9A-Z]{16}\b
+-----BEGIN [A-Z ]*PRIVATE KEY-----
