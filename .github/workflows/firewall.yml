@@ -1,0 +1,43 @@
+# ⚠️ THIS REPO IS PUBLIC. That is the whole reason this gate exists here.
+#
+# The private-content firewall stops private content reaching a public surface.
+# It was running on private repos, where publishing is impossible, and absent
+# from the public ones, where publishing is the point (arqtos-sdk-go#38). A
+# repo with no firewall is the silent-clean failure state with the middle step
+# removed: the green check is already there and nothing is scanning.
+name: firewall
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  firewall:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Scan tracked files against denylist
+        # ⚠️ SHA-pinned, unlike the other shared actions here which use @v1, and
+        # the baseline manifest requires it: this is the only shared action that
+        # is a GATE. A compromised gate does not break the build — it returns a
+        # GREEN CHECK on a repo whose scan is no longer running. Bump
+        # deliberately, reading the diff.
+        uses: arqtiqa/arqtos-actions/.github/actions/firewall@a3ce349cc53d42d93c97eebe5a2035a70b0eebd2  # v1
+        with:
+          # ⚠️ The denylist lives HERE and is passed in. The action ships none
+          # and must never ship one — read `action.yml`, which is in this same
+          # repository. A missing list is exit 2 (misconfigured), never a pass.
+          #
+          # This is arqtos-actions' own caller list, scoped to its own audience.
+          # It is NOT the action's default; the file's header says so too,
+          # because this is the one repo where that mistake is possible.
+          denylist: .github/scripts/private-content-denylist.txt

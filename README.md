@@ -22,12 +22,20 @@ Everything in this repository is world-readable. That makes the boundary sharp:
 | | |
 |---|---|
 | ✅ **logic** | composite actions, scripts, the steps a check performs |
-| ❌ **patterns** | a denylist, an allowlist, any list of the things a check protects — **a denylist is a list of what it guards**, so publishing it defeats it |
-| ❌ **defaults that bundle patterns** | an action must not ship a fallback denylist. Make the input **required**, so a missing one is a *misconfiguration*, never a silent fall-back |
+| ❌ **an action's own patterns** | no action under `.github/actions/` may carry, bundle or default a denylist — **a shared denylist is the union of every caller's list**, and the union is the disclosure |
+| ❌ **defaults that bundle patterns** | make the input **required**, so a missing one is a *misconfiguration*, never a silent fall-back |
 | ❌ **credentials, tokens, environment dumps** | including in examples and test fixtures |
-| ❌ **anything identifying a person, machine or customer** | a real name, a personal address, a host-naming scheme, a customer name |
+| ❌ **anything identifying a person, machine or customer** | a real name, a personal address, a host-naming scheme, a customer name — **in any file, including a denylist** |
+| ✅ **this repo's own caller list** | `.github/scripts/private-content-denylist.txt` — generic credential *shapes* and private-network ranges, scoped to this repo's audience, read only by this repo's own `firewall` workflow |
 
-Patterns are supplied at run time from a secret — the same split used elsewhere in the estate: **the mechanism is public, the data is not.**
+An action's data is public; a caller's data is the caller's. **The mechanism is shared, the patterns are not.**
+
+⚠️ **The last two rows look contradictory and are not — the distinction is load-bearing, and this is the only repository where it can be got wrong,** because the action and one of its callers live here together.
+
+- **A generic credential *shape*** — `ghp_` followed by 36 base62 characters — is published by the vendor that issues it. It describes a *format*, tells a reader nothing about this estate, and is why the equivalent patterns are compiled into a world-readable release binary (arqtos-cli#839).
+- **An identity pattern** — a login, a hostname scheme, a customer name — *is* a description of the thing it guards. Committing one here publishes it. #839 removed exactly these from the embedded tiers and moved them to a run-time overlay, and that ruling binds this repository too.
+
+So: this repo scanning **itself** against generic shapes is correct and was the gap (arqtos-sdk-go#38 — the repo hosting the firewall was not running it). The shared **action** shipping those same shapes as a default would still be wrong, for a different reason: it would make a caller's missing denylist look like a clean scan.
 
 ⚠️ **The reviewable question for any change here is not "does it work" but "what does it now reveal".**
 
