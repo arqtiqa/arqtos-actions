@@ -1,0 +1,87 @@
+name: 'Go formatting gate'
+description: 'Invoke the repo''s own `make fmt-check`, and fail loudly if the repo has not adopted the convention.'
+author: 'arqtiqa/arqtos-actions'
+
+# ⚠️ THIS ACTION DELIBERATELY DOES NOT RUN gofmt.
+#
+# It invokes the CALLER's Makefile target. That is the whole point, and it is
+# the opposite of what a shared action usually does.
+#
+# The problem this exists to fix was not a missing check — it was FOUR
+# implementations of one check that disagreed:
+#
+#   repo A   `make fmt` was a CHECK that failed
+#   repo B   `make fmt` REWROTE the working tree; `fmt-check` was the check
+#   repo C   no Makefile at all; the check lived inline in ci.yml
+#   repo B   AND a fourth spelling inside its own composite action
+#
+# Shipping a fifth implementation here — `run: gofmt -l .` — would have made a
+# shared action that AGREES WITH NOBODY, and left the three local spellings in
+# place. So the Makefile target is the single definition and this action is the
+# single INVOCATION, which is what lets a developer run locally exactly what CI
+# runs.
+#
+# ⚠️ The value this adds over a bare `run: make fmt-check` is the adoption
+# check below. A repo that has not adopted the convention otherwise fails with
+# `make: *** No rule to make target 'fmt-check'`, which reads as a broken
+# workflow rather than as an unadopted standard.
+
+inputs:
+  make-target:
+    description: >-
+      The Makefile target to invoke. Defaults to `fmt-check` — the estate-wide
+      name for the CHECK. Override only if a repo has a documented reason to
+      differ, which is itself a signal the convention has drifted.
+    required: false
+    default: 'fmt-check'
+  working-directory:
+    description: 'Directory containing the Makefile. Defaults to the workspace root.'
+    required: false
+    default: '.'
+
+runs:
+  using: composite
+  steps:
+    # ⚠️ Adoption check, and it is the reason this action exists rather than a
+    # one-line `run:`. It separates three states a bare `make` collapses into
+    # one confusing error:
+    #   - no Makefile            -> the repo has not adopted the convention
+    #   - Makefile, no target    -> partially adopted, or the target was renamed
+    #   - target present         -> proceed
+    - name: Assert the formatting convention is adopted
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        set -uo pipefail
+        target='${{ inputs.make-target }}'
+        if [[ ! -f Makefile ]]; then
+          echo "::error::No Makefile in $(pwd). This repository has not adopted the shared Go formatting convention: 'make fmt' WRITES, 'make ${target}' CHECKS, and 'lint' depends on the check. Add those targets, then this gate passes."
+          exit 1
+        fi
+        if ! grep -qE "^${target}:" Makefile; then
+          echo "::error::Makefile has no '${target}' target. The shared convention names the CHECK '${target}' — a repo that spells it differently cannot share this gate, which is the divergence this action exists to remove."
+          grep -oE '^[a-z][a-z-]*:' Makefile | tr -d ':' | sort -u | paste -sd' ' - | sed 's/^/available targets: /' >&2
+          exit 1
+        fi
+
+    # ⚠️ The check body lives in the caller's Makefile, NOT here. It must handle
+    # both halves of the gofmt trap, and a caller that handles only the first
+    # has a gate that cannot fail on the second:
+    #
+    #   1. `gofmt -l` EXITS 0 while listing files, so the exit code gates
+    #      nothing — the EMPTINESS of its output is the check.
+    #   2. `gofmt` exits NON-ZERO when it cannot PARSE a file, and that is not
+    #      "formatting is fine". Collapsing the two makes an unparseable tree
+    #      report CLEAN.
+    #
+    # This action cannot enforce that from outside — it can only make the
+    # invocation uniform so there is one body to get right instead of four.
+    - name: Format check
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        set -uo pipefail
+        if ! make '${{ inputs.make-target }}'; then
+          echo "::error::not gofmt-clean. Run 'make fmt' locally and commit the result."
+          exit 1
+        fi
