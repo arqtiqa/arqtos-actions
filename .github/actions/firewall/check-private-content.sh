@@ -132,8 +132,15 @@ if (( ${#existing_files[@]} == 0 )); then
   exit 0
 fi
 
+# grep's diagnostics go here so they can be SURFACED rather than discarded.
+# See the exit-status handling below for why this file has to exist.
+grep_stderr=$(mktemp)
+trap 'rm -f "$grep_stderr"' EXIT
+
 violations=0
+rule_lineno=0
 while IFS= read -r line; do
+  rule_lineno=$((rule_lineno + 1))
   # Skip blank lines and full-line comments (no inline comments per the format).
   [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
 
@@ -156,12 +163,51 @@ while IFS= read -r line; do
   # Found by the cross-implementation parity test (arqtos-cli#1069) on its
   # first run — nothing else could have found it, because both sides of the
   # pre-existing parity test were Go.
-  if matches=$(grep -nIHE -e "$line" "${existing_files[@]}" 2>/dev/null); then
-    if [[ -n "$matches" ]]; then
-      echo "✗ pattern: $line" >&2
-      printf '%s\n' "$matches" | sed 's/^/    /' >&2
-      violations=$((violations + 1))
+  # ⚠️ GREP HAS THREE OUTCOMES AND THIS MUST DISTINGUISH ALL THREE (arqtos-cli#1092).
+  #
+  #   0 = matched          -> a violation
+  #   1 = no match         -> this rule is clean
+  #   2 = grep FAILED      -> the rule never ran; the scan learned NOTHING about it
+  #
+  # The old form was `if matches=$(grep ... 2>/dev/null); then`, which collapsed
+  # 1 and 2 into the same branch: a pattern grep could not compile was read as
+  # "no match", the rule was silently skipped, and the scan still reported CLEAN.
+  # Verified live — a denylist whose only rule was `[unclosed` passed a tree
+  # containing a real `ghp_` token with exit 0.
+  #
+  # That is the disarm-and-stay-green failure mode the whole firewall exists to
+  # prevent, and it is worse than a broken build: a rule that stops compiling
+  # turns itself off without turning the check red.
+  #
+  # ⚠️ `2>/dev/null` IS GONE ON PURPOSE. Do not restore it "to keep the output
+  # quiet" — discarding the diagnostic is half of how this defect hid. The
+  # message is captured, and printed on the path that acts on it.
+  #
+  # Fail CLOSED on 2. An unusable pattern, an unreadable file, or any other grep
+  # failure is a MISCONFIGURATION (exit 2), never a clean result — same rule the
+  # rule-count guard above applies to an empty denylist.
+  : >"$grep_stderr"
+  matches=$(grep -nIHE -e "$line" "${existing_files[@]}" 2>"$grep_stderr") \
+    && grep_status=0 || grep_status=$?
+
+  if (( grep_status >= 2 )); then
+    echo "✗ check-private-content: grep could not apply a denylist rule (exit $grep_status)." >&2
+    echo "  $denylist:$rule_lineno" >&2
+    echo "    $line" >&2
+    if [[ -s "$grep_stderr" ]]; then
+      sed 's/^/    grep: /' "$grep_stderr" >&2
     fi
+    echo "" >&2
+    echo "  This rule was NOT applied, so the scan cannot report clean: an unenforced" >&2
+    echo "  rule is indistinguishable from an absent one. Fix the pattern (or the" >&2
+    echo "  unreadable path) — exit 2 is misconfiguration, not a caught leak." >&2
+    exit 2
+  fi
+
+  if (( grep_status == 0 )) && [[ -n "$matches" ]]; then
+    echo "✗ pattern: $line" >&2
+    printf '%s\n' "$matches" | sed 's/^/    /' >&2
+    violations=$((violations + 1))
   fi
 done < "$denylist"
 

@@ -158,3 +158,89 @@ def test_hyphen_rule_does_not_mask_a_normal_rule(tmp_path: Path) -> None:
         "a rule following a leading-hyphen rule must still be evaluated; got "
         f"{p.returncode}\nstderr:\n{p.stderr.decode()}"
     )
+
+
+# --- #1092: a rule grep cannot COMPILE must be MISCONFIGURED, never clean -----
+#
+# ⚠️ This is the returning defect, not a new one. arqtiqa/arqtos-cli#831 recorded
+# it, then struck it as "gone by construction" when the estate moved to the Go
+# in-package verb (an unusable pattern is a ConfigError -> exit 2, with no
+# `2>/dev/null` to forget). The estate converged back onto THIS script, and the
+# defect came back with the mechanism.
+#
+# The distinction the old code lost: grep exits 0 on match, 1 on no-match, and
+# 2 when it FAILED. `if matches=$(grep ... 2>/dev/null)` collapsed 1 and 2 into
+# one branch, so a rule grep refused to compile was read as "no match" — the
+# rule silently never applied, and the scan still reported clean.
+#
+# The `-e` fix above narrowed the TRIGGER (a pattern starting with `-`). These
+# tests cover the CLASS.
+
+BAD_RULE = "[unclosed"
+
+
+def test_uncompilable_rule_is_MISCONFIGURED_not_clean(tmp_path: Path) -> None:
+    """⚠️ The core of #1092, and the sharpest test in this file.
+
+    The tree contains a real credential shape. The denylist's only rule is one
+    grep cannot compile. Pre-fix this exited 0 — a green gate over a live token,
+    which is strictly worse than a red build: the rule turned ITSELF off without
+    turning the check red.
+    """
+    r = repo(tmp_path, BAD_RULE + "\n")
+    p = run(r, "--denylist=dl.txt", "--all-tracked")
+    assert p.returncode == MISCONFIGURED, (
+        f"an uncompilable rule exited {p.returncode}; a rule that never ran "
+        f"cannot be reported as clean — the scan learned nothing about it\n"
+        f"stderr:\n{p.stderr.decode()}"
+    )
+
+
+def test_uncompilable_rule_names_itself_and_its_line(tmp_path: Path) -> None:
+    """Exit 2 alone sends the operator hunting. The message must say WHICH rule.
+
+    The line number is load-bearing: denylist rules are regexes, several look
+    alike, and `dl.txt:2` is the difference between a one-second fix and a
+    bisect.
+    """
+    r = repo(tmp_path, "# a comment\n" + BAD_RULE + "\n")
+    err = run(r, "--denylist=dl.txt", "--all-tracked").stderr.decode()
+    assert "dl.txt:2" in err, f"the error must locate the rule; got:\n{err}"
+    assert BAD_RULE in err, f"the error must quote the rule; got:\n{err}"
+    # grep's own diagnostic is the thing `2>/dev/null` used to discard.
+    assert "grep:" in err, (
+        f"grep's diagnostic must be surfaced, not swallowed; got:\n{err}"
+    )
+
+
+def test_uncompilable_rule_does_not_let_the_scan_pass_on_other_rules(tmp_path: Path) -> None:
+    """⚠️ Fail CLOSED, not partially.
+
+    A denylist mixing one bad rule with valid ones must NOT scan the remainder
+    and report clean. Partial enforcement reported as success is the same lie in
+    a smaller box — the operator reads a green check as "all rules applied".
+    """
+    r = repo(tmp_path, PROBE + "\n" + BAD_RULE + "\nzzz_other\n")
+    (r / "leak.md").write_text("ordinary prose, nothing to match\n")
+    p = run(r, "--denylist=dl.txt", "--all-tracked")
+    assert p.returncode == MISCONFIGURED, (
+        f"a denylist containing one uncompilable rule exited {p.returncode}; "
+        f"it must refuse rather than enforce a subset silently\n"
+        f"stderr:\n{p.stderr.decode()}"
+    )
+
+
+def test_a_genuine_no_match_is_still_CLEAN(tmp_path: Path) -> None:
+    """⚠️ The control that stops the fix from being 'exit 2 more often'.
+
+    grep's 1 (no match) and 2 (failure) are now different branches. Without this
+    test, mapping BOTH to exit 2 would satisfy every assertion above while
+    making the gate permanently red — which carries no signal either.
+    """
+    r = repo(tmp_path, "zzz_never_appears_anywhere\n")
+    (r / "leak.md").write_text("ordinary prose\n")
+    p = run(r, "--denylist=dl.txt", "--all-tracked")
+    assert p.returncode == CLEAN, (
+        f"a valid rule with no match must be clean, got {p.returncode}\n"
+        f"stderr:\n{p.stderr.decode()}"
+    )
