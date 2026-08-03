@@ -31,7 +31,7 @@ jobs:
         # is a GATE. A compromised gate does not break the build — it returns a
         # GREEN CHECK on a repo whose scan is no longer running. Bump
         # deliberately, reading the diff.
-        uses: arqtiqa/arqtos-actions/.github/actions/firewall@a3ce349cc53d42d93c97eebe5a2035a70b0eebd2  # v1
+        uses: arqtiqa/arqtos-actions/.github/actions/firewall@e294a60d6ccc7e579d61d5bb5a6ea97f41785e2d  # v1
         with:
           # ⚠️ The denylist lives HERE and is passed in. The action ships none
           # and must never ship one — read `action.yml`, which is in this same
