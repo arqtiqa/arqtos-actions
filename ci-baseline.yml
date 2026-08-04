@@ -122,6 +122,40 @@ actions:
           Pin as `<40-char-sha>  # v1` so a human can still read which release
           it corresponds to.
 
+      # ⚠️ go-fmt KEEPS `@v1` even though it, too, can fail silently-clean —
+      # and that needs saying, because the rule above is stated in terms of
+      # FAILURE MODE and a naive reading puts go-fmt in the SHA-pinned column.
+      #
+      # A subverted go-fmt returns green on an unformatted tree, exactly like a
+      # subverted firewall returns green on a leaking one. The modes match. What
+      # differs is the COST of the silence:
+      #
+      #   firewall silent-clean   private content is published. Unbounded, and
+      #                           unrecoverable — you cannot un-publish it.
+      #   go-fmt silent-clean     unformatted code reaches main. Bounded, and
+      #                           self-correcting: the next honest run names every
+      #                           file, and `make fmt` fixes all of them.
+      #
+      # So the criterion is not "can it fail silently" but "is the silence
+      # RECOVERABLE". Paying the N-bumps-per-consumer cost to protect formatting
+      # would spend the single-source benefit on the one thing that repairs itself.
+      #
+      # ⚠️ If go-fmt ever gains a non-formatting responsibility — a license header
+      # check, a generated-code freshness assert, anything whose silent pass hides
+      # something you cannot fix after the fact — this override is wrong and it
+      # moves to commit-sha. The trigger is the action's SCOPE changing, not its
+      # name.
+      go-fmt:
+        pin_style: moving-tag
+        why: >-
+          Invokes the CALLER's `make fmt-check` rather than running gofmt itself,
+          so the definition lives in each repo's Makefile and this action is only
+          the invocation. Its silent-failure cost is recoverable (see above), so it
+          keeps the moving tag the single source exists to provide.
+        adopted_by: >-
+          arqtos-cli, arqtos-sdk-go, arqtos-connectors — three consumers, which is
+          why omitting this entry would itself be a manifest violation.
+
 # ---------------------------------------------------------------------------
 # The two-consumer rule
 # ---------------------------------------------------------------------------
