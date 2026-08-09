@@ -45,6 +45,33 @@ inputs:
       denylist -- is ALSO a configuration error, never a silent no-op.
     required: false
     default: ''
+  identity-overlay:
+    description: >-
+      Identity-tier pattern TEXT (one pattern per line -- NOT a path, unlike
+      `denylist` above) for the org secret `ARQTOS_FIREWALL_IDENTITY_OVERLAY`
+      (arqtiqa/arqtos#342), e.g.
+      `identity-overlay: ${{ secrets.ARQTOS_FIREWALL_IDENTITY_OVERLAY }}`.
+      Identity patterns are never committed anywhere -- embedding them would
+      compile confidential regex text into a world-readable release asset --
+      so this is the only way to supply them, and it is unioned with
+      `denylist` at scan time.
+
+      Optional. Absent (unset, or the secret unavailable -- e.g. a
+      Dependabot-triggered run, which GitHub never grants org secrets to)
+      is a legitimate, STATED, credential-tier-only run -- it never fails
+      just because the overlay is missing, so a caller wiring this input
+      does not also need an actor-based skip the way a fail-closed consumer
+      of the same secret does (see arqtiqa/arqtos-skills' `estate-identifiers`
+      job for that pattern, needed there because that job has no
+      credential-tier fallback to run instead).
+
+      A value that IS supplied but resolves to zero usable pattern lines
+      (all-comment, all-whitespace, a truncated secret) is a configuration
+      error (exit 2), never a pass -- same rule `denylist` follows above,
+      no `--allow-empty` escape hatch either. The overlay's own pattern text
+      is never printed in the report (arqtiqa/arqtos-cli#1009).
+    required: false
+    default: ''
 
 runs:
   using: composite
@@ -55,6 +82,17 @@ runs:
         INPUT_DENYLIST: ${{ inputs.denylist }}
         INPUT_FILES: ${{ inputs.files }}
         INPUT_EXEMPTIONS: ${{ inputs.exemptions }}
+        # ⚠️ Kept as its OWN step-env entry (not folded into the `run:` body's
+        # local variables below) for the same reason denylist/files/exemptions
+        # are: GitHub Actions masks a registered secret wherever it appears in
+        # step output, and that masking is keyed off literal string values
+        # flowing through the runner -- an env assignment is the documented,
+        # supported path for that. The script reads this exact name
+        # (ARQTOS_FIREWALL_IDENTITY_OVERLAY) directly; see check-private-content.sh's
+        # module doc for why this is an env var and never a --flag (argv is
+        # visible on the runner via `ps` to anything that can see the process;
+        # an env var passed this way is not).
+        ARQTOS_FIREWALL_IDENTITY_OVERLAY: ${{ inputs.identity-overlay }}
       run: |
         set -euo pipefail
 

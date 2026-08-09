@@ -7,9 +7,18 @@
 #   check-private-content.sh                          # nothing to check; exits 0
 #   check-private-content.sh --denylist=<path> ...     # override denylist location
 #   check-private-content.sh --exemptions=<path> ...   # override exemptions file
+#   ARQTOS_FIREWALL_IDENTITY_OVERLAY="$(pattern lines)" check-private-content.sh ...
+#                                                       # union in the identity tier
 #
 # Exits 0 if no matches, 1 if any pattern fires (with file:line:pattern
 # context on stderr), 2 on configuration error (missing denylist, etc).
+#
+# ARQTOS_FIREWALL_IDENTITY_OVERLAY (optional environment variable, never a
+# CLI flag or a committed path -- see the module doc further down for the
+# full "why") unions an identity-tier pattern list into the scan. Absent
+# (unset or empty) is a legitimate, stated, credential-tier-only run. Set
+# but resolving to zero usable pattern lines is a configuration error
+# (exit 2). The overlay's own pattern text is never printed.
 #
 # --exemptions=<path> (optional) names a committed path+rule escape hatch
 # (arqtiqa/arqtos-cli#851) for content that is DELIBERATELY supposed to look
@@ -37,7 +46,36 @@
 # spot. This mirrors the reference Go implementation's exemptions mechanism
 # exactly (same format, same fail-closed validation), so one committed
 # exemptions file serves both engines.
-
+#
+# IDENTITY-TIER OVERLAY (arqtiqa/arqtos#342). Read from the environment
+# variable ARQTOS_FIREWALL_IDENTITY_OVERLAY -- the SAME org secret
+# (`arqtiqa`, visibility private) arqtos-skills' estate-identifiers job and
+# the Go verb's --extra-denylist both consume, so one secret serves every
+# consumer. This is deliberately NOT a --overlay=<path> flag: unlike the
+# denylist, identity patterns are never committed anywhere (embedding them
+# would compile confidential regex text into a world-readable release
+# asset), so there is no file for a path to name. Format is identical to
+# the denylist's: one pattern per line, blank lines and full-line `#`
+# comments skipped.
+#
+# ⚠️ EMPTY MEANS ABSENT; NON-EMPTY-BUT-ZERO-PATTERNS MEANS MISCONFIGURED.
+# A caller that never wires the overlay gets an empty environment variable
+# -- that is a legitimate, common, credential-tier-only run, and is STATED
+# as such below, never silently upgraded or downgraded. A caller that DOES
+# wire it (`identity-overlay: ${{ secrets.ARQTOS_FIREWALL_IDENTITY_OVERLAY }}`)
+# but whose value strips down to zero usable pattern lines -- an
+# all-comment placeholder, a truncated secret, a bad merge -- gets exit 2,
+# never a pass: a zero-pattern overlay reports every file clean, which is
+# strictly worse than no overlay at all. There is no --allow-empty escape
+# hatch for this, on purpose (arqtos-skills#85 paid for that lesson once).
+#
+# ⚠️ THE OVERLAY'S PATTERN TEXT IS NEVER PRINTED, even on a match or a
+# compile failure. An overlay pattern IS confidential identity regex text
+# (arqtiqa/arqtos-cli#1009: the same string reaching `arqtos doctor` stdout
+# was a defect); GitHub Actions masks registered secrets in logs, but this
+# script does not rely on that alone -- it withholds the text itself, at
+# the source, so the same guarantee holds outside Actions too (a local
+# invocation, a test, a future consumer).
 set -euo pipefail
 
 DEFAULT_DENYLIST="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/private-content-denylist.txt"
@@ -70,7 +108,7 @@ for arg in "$@"; do
       files0=1
       ;;
     --help|-h)
-      sed -n '2,39p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+      sed -n '2,78p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     --)
@@ -143,6 +181,50 @@ if [[ "${rule_count:-0}" -eq 0 ]]; then
   echo "  A scan with nothing to scan against passes every file, so this is a" >&2
   echo "  misconfiguration (exit 2), not a clean result." >&2
   exit 2
+fi
+
+# ---------------------------------------------------------------------------
+# Identity-tier overlay (arqtiqa/arqtos#342) -- see the module doc above for
+# the full "why". Parsed and validated HERE, alongside the denylist's own
+# rule-count guard above and before the "no files" shortcuts below, because
+# a misconfigured overlay is a configuration error regardless of how many
+# files this particular run happens to touch.
+# ---------------------------------------------------------------------------
+overlay_raw="${ARQTOS_FIREWALL_IDENTITY_OVERLAY:-}"
+overlay_rules=()
+if [[ -n "$overlay_raw" ]]; then
+  while IFS= read -r ov_line; do
+    # ⚠️ `(#|$)`, not `-z ||  #` — an all-WHITESPACE line (no `#`) must also
+    # count as blank, same as the denylist's own rule-count guard above
+    # (`grep -cvE '^[[:space:]]*(#|$)'`). Using the narrower `-z` test here
+    # would let a whitespace-only overlay line slip through AS a pattern
+    # (a literal-space regex), masking the exact all-whitespace-secret
+    # misconfiguration this guard exists to catch.
+    [[ "$ov_line" =~ ^[[:space:]]*(#|$) ]] && continue
+    overlay_rules+=("$ov_line")
+  done <<<"$overlay_raw"
+
+  # ⚠️ NON-EMPTY input that resolves to ZERO usable patterns is the
+  # misconfiguration this guard exists for (see module doc) -- NOT the
+  # same as an absent overlay, handled by the honesty statement below.
+  if [[ "${#overlay_rules[@]}" -eq 0 ]]; then
+    echo "✗ check-private-content: \$ARQTOS_FIREWALL_IDENTITY_OVERLAY was supplied but contains no rules." >&2
+    echo "  A zero-pattern overlay reports every file clean, which is strictly worse" >&2
+    echo "  than no identity coverage at all -- this is a misconfiguration (exit 2)," >&2
+    echo "  never a pass. There is no --allow-empty escape hatch for this." >&2
+    exit 2
+  fi
+fi
+
+# ⚠️ STATED, NEVER SILENT (arqtiqa/arqtos#342). A green run must never imply
+# coverage it did not have. Printed unconditionally, before any scanning and
+# regardless of outcome, mirroring the reference Go verb's own
+# "tier=work (N patterns, no overlay)" vs "tier=work (N patterns) +overlay=…"
+# report line -- this is that same honesty, in the shell scanner.
+if [[ "${#overlay_rules[@]}" -gt 0 ]]; then
+  echo "info: check-private-content: denylist ($rule_count pattern(s)) +identity overlay (${#overlay_rules[@]} pattern(s))" >&2
+else
+  echo "info: check-private-content: denylist ($rule_count pattern(s)), no identity overlay -- credential-tier only" >&2
 fi
 
 # No files to check — common in CI when the diff is doc-only or empty.
@@ -521,6 +603,45 @@ while IFS= read -r line; do
   fi
 done < "$denylist"
 
+# ---------------------------------------------------------------------------
+# Identity-tier overlay scan (arqtiqa/arqtos#342). A second, deliberately
+# SIMPLER pass over the same `existing_files` -- no interaction with the
+# exemptions mechanism above, on purpose: `.firewallignore` is a COMMITTED,
+# PUBLIC file whose <rule> column must equal a pattern's exact text, so
+# exempting an overlay pattern there would mean committing the very
+# confidential regex the overlay exists to keep uncommitted. Overlay
+# patterns are therefore not exemptable at all — same three-way grep exit
+# handling as the denylist loop above (0 match / 1 clean / 2 fail-closed),
+# but NEVER echoing the pattern's own text, on either the match or the
+# compile-failure path (arqtiqa/arqtos-cli#1009).
+# ---------------------------------------------------------------------------
+overlay_lineno=0
+for line in "${overlay_rules[@]+"${overlay_rules[@]}"}"; do
+  overlay_lineno=$((overlay_lineno + 1))
+
+  : >"$grep_stderr"
+  matches=$(grep -nIHE -e "$line" "${existing_files[@]+"${existing_files[@]}"}" 2>"$grep_stderr") \
+    && grep_status=0 || grep_status=$?
+
+  if (( grep_status >= 2 )); then
+    echo "✗ check-private-content: grep could not apply identity overlay pattern #$overlay_lineno (exit $grep_status)." >&2
+    if [[ -s "$grep_stderr" ]]; then
+      sed 's/^/    grep: /' "$grep_stderr" >&2
+    fi
+    echo "" >&2
+    echo "  The pattern's own text is withheld here on purpose (arqtiqa/arqtos-cli#1009)" >&2
+    echo "  -- fix it at its source, the ARQTOS_FIREWALL_IDENTITY_OVERLAY secret. An" >&2
+    echo "  identity pattern that never ran cannot be reported as clean." >&2
+    exit 2
+  fi
+
+  if (( grep_status == 0 )) && [[ -n "$matches" ]]; then
+    echo "✗ pattern: [identity overlay pattern #$overlay_lineno -- text withheld, arqtiqa/arqtos-cli#1009]" >&2
+    printf '%s\n' "$matches" | sed 's/^/    /' >&2
+    violations=$((violations + 1))
+  fi
+done
+
 # Disclosure, not silence: suppressing a match must never be indistinguishable
 # from "nothing was there to find" (same discipline as the reference Go
 # implementation's ExemptedFiles count). Printed only when the count is
@@ -532,8 +653,11 @@ fi
 
 if (( violations > 0 )); then
   echo "" >&2
-  echo "✗ check-private-content: $violations denylist pattern(s) matched." >&2
-  echo "  Source: $denylist" >&2
+  # ⚠️ Tier-neutral wording (arqtiqa/arqtos#342) -- $violations now counts
+  # BOTH denylist and identity-overlay hits, so a message hard-coding
+  # "denylist" would misreport a run an overlay pattern alone failed.
+  echo "✗ check-private-content: $violations pattern(s) matched." >&2
+  echo "  Denylist source: $denylist" >&2
   echo "  If a match is a true leak: remove it from the file — a placeholder in the committed" >&2
   echo "  copy, the real value supplied at runtime from the environment or a secret reference." >&2
   echo "  If a match is a false positive: refine the pattern (more specific) rather than removing it." >&2
