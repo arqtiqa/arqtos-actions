@@ -288,10 +288,16 @@ def test_an_overlay_set_to_the_literal_empty_string_is_ALSO_absent(tmp_path):
 def test_overlay_pattern_text_is_absent_from_the_match_report_line(tmp_path):
     """⚠️ Verified directly, not assumed from Actions' log masking (this
     script has no idea whether it is even running under Actions). The
-    report line naming WHICH pattern fired must be redacted; the matched
-    FILE's own content (the operator's own data, not the detector's secret)
-    is unaffected and still shown, exactly as the credential tier already
-    does."""
+    report line naming WHICH pattern fired must be redacted.
+
+    ⚠️ This docstring used to go on to say the matched FILE's own content
+    "is unaffected and still shown, exactly as the credential tier already
+    does". That reasoning was wrong for THIS tier and arqtiqa/arqtos#365
+    reversed it: an identity match's matched line CONTAINS the confidential
+    identity string, so printing it published, into a CI log, the very text
+    the identity tier exists to keep out of one. The content is withheld
+    too now — see test_firewall_overlay_exemptions.py, which pins that
+    directly."""
     r = repo(tmp_path)
     (r / "dl.txt").write_text(CREDENTIAL_PROBE + "\n")
     (r / "leak.md").write_text(f"identity leak: {IDENTITY_PROBE} here\n")
@@ -643,7 +649,18 @@ def test_overlay_violation_survives_even_when_the_denylist_has_nothing_left_to_s
     shortcut."""
     r = repo(tmp_path)
     (r / "dl.txt").write_text(f"# header mentioning {IDENTITY_PROBE}\n{CREDENTIAL_PROBE}\n")
-    (r / ".firewallignore").write_text(f"*.md\t{CREDENTIAL_PROBE}\tsynthetic\n")
+    # ⚠️ The glob is `*.txt`, not `*.md` (arqtiqa/arqtos#365). This corpus
+    # tracks no `.md` file at all, so `*.md` was a genuinely STALE exemption
+    # that happened to go unvalidated: pre-#365 the exemptions file was only
+    # ever parsed once the DENYLIST side had a file to scan, and the whole
+    # point of this corpus is that it does not. #365 moved exemption
+    # resolution ahead of both scans (an overlay exemption has to resolve on
+    # a run like this one too), so the stale entry is now caught and this
+    # fixture would exit 2 for a reason that has nothing to do with what the
+    # test asserts. `*.txt` matches the tracked `dl.txt`, keeping the entry
+    # valid while leaving the construction — an empty `existing_files` with a
+    # live overlay corpus — exactly as it was.
+    (r / ".firewallignore").write_text(f"*.txt\t{CREDENTIAL_PROBE}\tsynthetic\n")
     add(r)
     p = run(r, "--denylist=dl.txt", "--all-tracked", overlay=IDENTITY_PROBE)
     assert p.returncode == MATCHED, (

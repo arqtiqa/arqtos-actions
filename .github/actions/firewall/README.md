@@ -55,7 +55,7 @@ The check is duplicated deliberately — in this action *and* in the script — 
 |---|---|---|
 | `denylist` | **yes** | no default, no bundled fallback; absent or unreadable → `2` |
 | `files` | no | space/newline-separated; defaults to `git ls-files` |
-| `exemptions` | no | path+rule exemptions file; empty defaults to `.firewallignore` at the repo root if present — see "Exemptions" below |
+| `exemptions` | no | path+rule exemptions file; empty defaults to `.firewallignore` at the repo root if present — see "Exemptions" below, including how a rule handle exempts an identity-overlay hit without quoting it |
 | `identity-overlay` | no | identity-tier pattern **text** (not a path) for the org secret `ARQTOS_FIREWALL_IDENTITY_OVERLAY` (`#342`) — see "The identity-tier overlay" below |
 | `require-identity-overlay` | no | `'true'` to make identity coverage a requirement rather than best-effort (`#344`) — see "Requiring identity coverage" below |
 
@@ -67,7 +67,9 @@ The firewall has two tiers. **Credential** patterns ship in the caller's committ
     identity-overlay: ${{ secrets.ARQTOS_FIREWALL_IDENTITY_OVERLAY }}
 ```
 
-Absent (unset, or the secret unavailable — a Dependabot-triggered run, which GitHub never grants org secrets to) is a legitimate, **stated**, credential-tier-only run; it never fails just because the overlay is missing. A value that **is** supplied but resolves to zero usable pattern lines (all-comment, all-whitespace, a truncated secret) is a configuration error (`2`), never a pass — the same rule the denylist's own empty-file guard follows. The overlay's own pattern text is never printed in the report, on any path.
+Absent (unset, or the secret unavailable — a Dependabot-triggered run, which GitHub never grants org secrets to) is a legitimate, **stated**, credential-tier-only run; it never fails just because the overlay is missing. A value that **is** supplied but resolves to zero usable pattern lines (all-comment, all-whitespace, a truncated secret) is a configuration error (`2`), never a pass — the same rule the denylist's own empty-file guard follows. The overlay's own pattern text is never printed in the report, on any path; neither is a matched line's **content**, which for an identity rule *is* the confidential string (`arqtiqa/arqtos#365`) — an overlay hit reports its rule's handle and `path:line`, nothing else.
+
+A legitimate identity match is exempted the same way any other match is, by a committed `.firewallignore` entry — see "Exempting an identity-overlay rule" below. Without that, wiring this input on a repository with even one legitimate match produced a permanently red gate, which is why the estate sat at one adopting repository.
 
 ## Requiring identity coverage
 
@@ -105,11 +107,33 @@ A denylist rule sometimes legitimately fires on content that is **deliberately**
 <path-glob>  <rule>  <reason>
 ```
 
-A tab or 2+ spaces separates the fields (a single space is ordinary prose punctuation, not a boundary). `<path-glob>` is matched `*`/`?`-never-crosses-`/` style against a scanned file's path; `<rule>` must equal a denylist line's exact text, copied verbatim; `<reason>` is a mandatory one-line justification — never optional, since that is what stops this file from growing into a blanket suppression nobody has to justify. Blank lines and full-line `#` comments are skipped, same convention as the denylist itself.
+A tab or 2+ spaces separates the fields (a single space is ordinary prose punctuation, not a boundary). `<path-glob>` is matched `*`/`?`-never-crosses-`/` style against a scanned file's path; `<rule>` names one active pattern — either a denylist line's exact text copied verbatim, or a **rule handle** (see below); `<reason>` is a mandatory one-line justification — never optional, since that is what stops this file from growing into a blanket suppression nobody has to justify. Blank lines and full-line `#` comments are skipped, same convention as the denylist itself.
 
-⚠️ **Scoped as narrowly as the mechanism allows: path + one specific rule, never "skip this rule everywhere" and never "skip every rule for this path."** A fixture needing two rules exempted gets two entries. An exemption suppresses only its own named (path, rule) pair — a file exempted for one rule still fails on any other rule that also matches it.
+⚠️ **Scoped as narrowly as the mechanism allows: path + one specific rule, never "skip this rule everywhere" and never "skip every rule for this path."** A fixture needing two rules exempted gets two entries. An exemption suppresses only its own named (path, rule) pair — a file exempted for one rule still fails on any other rule that also matches it, and a rule exempted for one path still fires on every other path.
 
-⚠️ **Fail closed on a stale entry.** A path glob matching no tracked file, or a rule matching no pattern in the denylist actually in force, is a **configuration error (exit 2)**, never a silent no-op — validated before any scanning happens, exactly like the denylist's own empty-file guard above. A stale exemption left in place after its target is renamed, deleted, or its pattern is tightened would otherwise rot into a permanent, invisible blind spot.
+⚠️ **Fail closed on a stale entry.** A path glob matching no tracked file, or a **verbatim** rule matching no active pattern, is a **configuration error (exit 2)**, never a silent no-op — validated before any scanning happens, exactly like the denylist's own empty-file guard above. A stale exemption left in place after its target is renamed, deleted, or its pattern is tightened would otherwise rot into a permanent, invisible blind spot.
+
+### Exempting an identity-overlay rule — rule handles
+
+An identity-overlay match can be exempted too (`arqtiqa/arqtos#365`), but it cannot be exempted by quoting the rule: `.firewallignore` is **committed** and an overlay pattern is a **secret**, so the entry has to name a rule it must never write down. It names it by **handle** instead — `sha256:` plus the first 12 lowercase hex digits of the SHA-256 of the pattern's exact text:
+
+```
+.arqtos/memory/*.md  sha256:a645c356c63b  internal governance note, never on a publication path
+```
+
+**You never compute a handle by hand.** A failing run prints the handle of whichever overlay rule fired, together with the exemption line's shape, and prints the hit as `path:line` only — never the pattern and never the matched line's content, both of which are the confidential text the identity tier exists to keep out of a log.
+
+⚠️ **A handle, not a position.** A positional reference (`overlay:3`) fails **open**: insert or reorder a rule in the secret and every exemption silently re-points at a *different* rule, suppressing something nobody reviewed while still reading as a reviewed decision. A digest cannot re-point — it resolves to the exact same pattern text or to nothing:
+
+| what changes | what happens |
+|---|---|
+| the overlay is **reordered** | nothing moves; order is not part of a rule's identity |
+| a rule is **edited** | its digest moves, the handle resolves to nothing, the exemption is **held inert** (disclosed on stderr) — so the edited rule scans that path again and the run goes **red** if it still matches |
+| the overlay is **absent** (fork PR, Dependabot, or never wired) | the handle resolves to nothing and is held inert — the tier did not run, so nothing is under-scanned, and an external contribution does not go red on a committed exemption it cannot resolve |
+
+An unresolvable handle is therefore held inert while an unresolvable **verbatim** rule is still exit 2: verbatim text names a rule set that is wholly present in the run, so a miss there really is staleness. Losing a suppression restores protection; it never removes any.
+
+⚠️ **Do not quote an overlay pattern verbatim.** It resolves — the reference Go implementation compares `<rule>` against every active pattern's source text, so the shell must too — but it is unusable: the identity tier scans `.firewallignore` itself, so the entry turns the exemptions file into an overlay hit on its own line and the run fails anyway. For a **denylist** rule the verbatim text remains the recommended form; it is committed and public, so there is nothing to withhold.
 
 Absent is fine: with no `exemptions` input and no `.firewallignore` present, behaviour is unchanged from a build with no exemptions mechanism at all. An **explicitly-named** `exemptions` path that does not exist, though, is a configuration error — naming one on purpose is a deliberate pointer, not an optional convention.
 
