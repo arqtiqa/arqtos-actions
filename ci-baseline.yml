@@ -122,40 +122,57 @@ actions:
           Pin as `<40-char-sha>  # v1` so a human can still read which release
           it corresponds to.
 
-      # ⚠️ firewall-falsifier IS SHA-PINNED TOO, for the same reason and one
-      # level up.
+      # ⚠️ firewall-falsifier IS DELIBERATELY ABSENT FROM THIS BLOCK — it keeps
+      # `@v1`, like everything except the gate itself. It was proposed as a
+      # second `commit-sha` entry and that proposal was REFUSED; this note is
+      # here so the question is not re-opened from scratch every time someone
+      # notices that a falsifier, too, can go green while proving nothing.
       #
-      # It proves that the firewall's denylist still MATCHES — that no rule has
-      # been edited into a form which still compiles but catches nothing,
-      # deleted during an unrelated edit, or added with nothing behind it. Its
-      # failure mode is therefore identical to the gate's own:
+      # THE CASE THAT WAS MADE FOR SHA-PINNING IT: it proves the gate's denylist
+      # still MATCHES, so a subverted falsifier reports every rule alive while
+      # the firewall it vouches for may be scanning against a dead list — and a
+      # subverted falsifier is worse than an absent one, because an absent one
+      # leaves a known gap while a subverted one closes it on paper.
       #
-      #   firewall-falsifier   compromised -> ⚠️ CAN REPORT LIVE. Every rule is
-      #                        declared alive, a green check appears, and the
-      #                        firewall it vouches for may be scanning against a
-      #                        list that no longer catches anything.
+      # ⚠️ WHY THAT IS NOT ENOUGH, ON THIS FILE'S OWN STATED CRITERION. The test
+      # here is not "can it fail silently" — go-fmt can too, and keeps `@v1`.
+      # It is whether the SILENCE IS RECOVERABLE. And the falsifier's is:
       #
-      # A subverted falsifier is strictly worse than an absent one, because an
-      # absent falsifier leaves a known gap while a subverted one closes it on
-      # paper. And its silence is UNRECOVERABLE in the same way the gate's is:
-      # what gets published while both are green cannot be un-published.
+      #   firewall silent-clean       private content is published. Unbounded
+      #                               and UNRECOVERABLE — you cannot un-publish.
+      #   falsifier silent-live       nothing is published by this. Its evidence
+      #                               (the denylist, the corpus) is entirely
+      #                               committed, so the NEXT honest run names
+      #                               every dead rule. Nothing is lost meanwhile
+      #                               — the gate is still running, still
+      #                               SHA-pinned, and is still what stands
+      #                               between private content and publication.
       #
-      # ⚠️ Pin it to the SAME SHA as `firewall` in any given consumer. The
-      # falsifier drives the scanner from its own sibling directory, so a
-      # consumer that pinned the two apart would be proving one scanner build
-      # alive while a different build guards the repository — which is the most
-      # convincing possible form of no coverage.
-      firewall-falsifier:
-        pin_style: commit-sha
-        why: >-
-          The standing proof that the gate's denylist still bites. Like the gate
-          itself, its failure mode is a green check rather than a broken build,
-          so it does not get a moving reference. Bump it deliberately, and in
-          lockstep with `firewall` — the falsifier runs the scanner that sits
-          beside it at the same SHA.
-        annotate: >-
-          Pin as `<40-char-sha>  # v1` so a human can still read which release
-          it corresponds to.
+      # The falsifier's silence is a DETECTION gap, not a DISCLOSURE gap. For
+      # content to actually escape, the denylist must ALSO be dead AND private
+      # content must ALSO be committed — and the gate, which is SHA-pinned,
+      # is the thing that would have to fail for that to matter.
+      #
+      # ⚠️ AND IT FAILS CLOSED UNDER "DID NOTHING", WHICH THE GATE DOES NOT.
+      # This is the structural half, and it is the sharper argument. The gate
+      # asserts a NEGATIVE ("nothing matched"), so a run that scanned nothing
+      # SATISFIES it — that is the whole silent-clean failure. The falsifier
+      # asserts a POSITIVE ("every rule matched something"), so a run that
+      # scanned nothing VIOLATES it. A degraded falsifier goes red by
+      # construction rather than green.
+      #
+      # ⚠️ THE COST OF THE MOVING TAG, STATED. `@v1` means the falsifier drives
+      # the scanner sitting beside it AT v1, while a consumer's gate runs its
+      # own SHA-pinned build. Those can differ. Today they do not — v1 and every
+      # consumer's pin carry a byte-identical `.github/actions/firewall/` — but
+      # nothing enforces that, so a future divergence could have the falsifier
+      # prove a list alive under one matching engine while a different engine
+      # guards the repository. If that ever becomes real, the fix is to make the
+      # falsifier REPORT the scanner build it used, so the mismatch is visible,
+      # rather than to buy visibility with N per-consumer bumps.
+      #
+      # If this is re-opened, re-open it on the recoverability criterion above,
+      # not on "it can fail silently" — that much is common to half this file.
 
       # ⚠️ go-fmt KEEPS `@v1` even though it, too, can fail silently-clean —
       # and that needs saying, because the rule above is stated in terms of

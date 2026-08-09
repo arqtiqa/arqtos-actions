@@ -33,12 +33,12 @@ denylist is worse than no firewall, because it is trusted.
 - uses: actions/checkout@v7
 
 - name: Scan tracked files against the denylist
-  uses: arqtiqa/arqtos-actions/.github/actions/firewall@<sha>
+  uses: arqtiqa/arqtos-actions/.github/actions/firewall@<sha>   # gate: SHA-pinned
   with:
     denylist: .github/scripts/private-content-denylist.txt
 
 - name: Prove every denylist rule still bites
-  uses: arqtiqa/arqtos-actions/.github/actions/firewall-falsifier@<sha>
+  uses: arqtiqa/arqtos-actions/.github/actions/firewall-falsifier@v1
   with:
     denylist: .github/scripts/private-content-denylist.txt
 ```
@@ -48,11 +48,32 @@ denylist is worse than no firewall, because it is trusted.
 | `denylist` | yes | — | **the same path the gate scans.** Proving a different list alive is the most convincing possible form of no coverage. |
 | `probes` | no | `.firewall-probes` | the caller's synthetic probe corpus |
 
-⚠️ **Pin both actions to the same SHA.** The falsifier drives the scanner from
-its own sibling directory, so a consumer that pinned them apart would prove one
-scanner build alive while a *different* build guarded the repository. Both are
-`pin_style: commit-sha` in `ci-baseline.yml`, for the same reason: a
-compromised falsifier does not break the build, it reports every rule alive.
+### ⚠️ The two actions are pinned differently, and that is deliberate
+
+The **gate** is `pin_style: commit-sha` in `ci-baseline.yml`. **This action is
+not** — it takes `@v1`, like every other shared action.
+
+That asymmetry was argued and settled (see `ci-baseline.yml`'s own note, which
+records the refused proposal so it is not re-opened from scratch). The short
+version: the criterion is not *"can it fail silently"* — go-fmt can too — but
+**whether the silence is recoverable**. The gate's is not: published content
+cannot be un-published. This action's is: its evidence is entirely committed,
+so the next honest run names every dead rule, and meanwhile the gate is still
+running and still pinned.
+
+And structurally, **this action fails closed under "did nothing"**. The gate
+asserts a *negative* ("nothing matched"), which a run that scanned nothing
+satisfies — that is the silent-clean failure. The falsifier asserts a
+*positive* ("every rule matched something"), which a run that scanned nothing
+**violates**.
+
+⚠️ **The cost of the moving tag, stated.** At `@v1` the falsifier drives the
+scanner sitting beside it *at v1*, while the caller's gate runs its own pinned
+build. Those can differ. Today they do not — `v1` and every consumer's pin
+carry a byte-identical `.github/actions/firewall/` — but nothing enforces it.
+If it ever diverges, the fix is to make this action **report the scanner build
+it used**, so the mismatch is visible, not to buy that visibility with one
+bump per consumer.
 
 ## The corpus (`.firewall-probes`)
 

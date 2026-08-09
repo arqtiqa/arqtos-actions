@@ -68,12 +68,19 @@ runs:
         # Locate both scripts relative to THIS action, not the caller's cwd.
         #
         # ⚠️ The scanner is resolved from `github.action_path`'s SIBLING
-        # directory ON PURPOSE: GitHub checks out this whole repository at the
-        # SHA the caller pinned, so the falsifier drives the EXACT scanner
-        # build the caller's gate runs. A falsifier that reimplemented matching
-        # would only ever prove its own engine agrees with itself, and a
-        # falsifier resolving the scanner from anywhere else could prove a
-        # different build alive than the one guarding the repository.
+        # directory ON PURPOSE. A falsifier that reimplemented matching would
+        # only ever prove that its own engine agrees with itself; this one
+        # drives the real scanner, from the same checkout, at the same ref.
+        #
+        # ⚠️ THAT REF IS THIS ACTION'S OWN, WHICH IS NOT NECESSARILY THE GATE'S.
+        # This action takes `@v1` while the gate is SHA-pinned (see
+        # ci-baseline.yml for why the two are pinned differently, and the
+        # refused proposal to align them). So the scanner used here is v1's,
+        # and the caller's gate may run a different build. Today they are
+        # byte-identical across v1 and every consumer's pin; nothing enforces
+        # that. If it ever diverges, make this step REPORT the scanner build it
+        # used so the mismatch is visible — do not reach for a per-consumer SHA,
+        # which buys that visibility at the cost of one bump per consumer.
         script="${{ github.action_path }}/check-denylist-liveness.sh"
         scanner="${{ github.action_path }}/../firewall/check-private-content.sh"
         if [[ ! -x "$script" ]]; then
