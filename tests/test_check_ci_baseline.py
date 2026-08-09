@@ -338,3 +338,43 @@ def test_push_only_workflow_passes(tmp_path):
 
 def test_workflow_dispatch_and_schedule_pass(tmp_path):
     assert run(*build(tmp_path, WF_DISPATCH_AND_SCHEDULE)) == OK
+
+
+# --- ⚠️ fix round 1: a push scoped ONLY by tags: cannot fire on an ordinary
+# branch commit at all, so it cannot double against pull_request -----------
+
+WF_PUSH_TAGS_ONLY_WITH_PR = """
+on:
+  pull_request:
+  push:
+    tags: ['v*']
+jobs:
+  a:
+    steps:
+      - uses: actions/checkout@v7
+"""
+
+WF_PUSH_TAGS_AND_BRANCHES_WITH_PR = """
+on:
+  pull_request:
+  push:
+    tags: ['v*']
+    branches: [main]
+jobs:
+  a:
+    steps:
+      - uses: actions/checkout@v7
+"""
+
+
+def test_tags_only_push_with_pull_request_passes(tmp_path):
+    """A `push:` scoped only by `tags:` never fires on an ordinary branch
+    commit, so it cannot double against `pull_request` — this is a realistic
+    shape (a workflow that runs on PRs and on release tags)."""
+    assert run(*build(tmp_path, WF_PUSH_TAGS_ONLY_WITH_PR)) == OK
+
+
+def test_tags_and_branches_push_with_pull_request_passes(tmp_path):
+    """`branches:` alongside `tags:` must still be evaluated on the
+    `branches:` key — declaring tags too does not change that."""
+    assert run(*build(tmp_path, WF_PUSH_TAGS_AND_BRANCHES_WITH_PR)) == OK

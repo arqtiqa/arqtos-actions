@@ -292,9 +292,22 @@ def scan_repo(root: Path, m: Manifest, exceptions: dict[str, str]) -> list[Findi
             triggers = _trigger_names(on_block)
             if "pull_request" in triggers and "push" in triggers:
                 push_spec = on_block.get("push") if isinstance(on_block, dict) else None
-                filtered = isinstance(push_spec, dict) and (
+                # ⚠️ The question is not "does push: carry a filter key" but
+                # "can this push: fire on an ordinary branch commit". A
+                # `branches:`/`branches-ignore:` filter answers that directly.
+                # A `tags:`/`tags-ignore:` filter answers it too, but only
+                # when there is NO branch filter alongside it: a tag push is
+                # not a branch commit, so tags-only can never double against
+                # `pull_request` — but `paths:`-only (or no filter at all)
+                # still fires on every matching branch commit, so that stays
+                # a violation.
+                has_branch_filter = isinstance(push_spec, dict) and (
                     "branches" in push_spec or "branches-ignore" in push_spec
                 )
+                has_tag_filter = isinstance(push_spec, dict) and (
+                    "tags" in push_spec or "tags-ignore" in push_spec
+                )
+                filtered = has_branch_filter or has_tag_filter
                 if not filtered:
                     findings.append(Finding(
                         "pull_request and an unfiltered push: double every PR-branch commit",
