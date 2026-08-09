@@ -50,6 +50,24 @@ Round 1 review (same Story) found two more, both fixed here and pinned below:
      own file list with none of those three skips; pinned in both
      directions below — the overlay must now see all three, and the
      denylist must still skip them.
+
+Round 2 review (same Story) caught a regression the round-1 restructure
+introduced, plus a test that did not exercise what it claimed to:
+
+  8. `grep -f <pattern-file> <files...>` with ZERO file operands does not
+     skip — it falls back to reading grep's own STDIN. Before round 1,
+     `overlay_scan_files` (via `existing_files`) was guaranteed non-empty
+     by an early `exit 0` this Story's restructure removed, so the overlay
+     loop never had to guard against an empty file list itself. Fixed with
+     the same `(( ${#target[@]} == 0 )) && continue` guard the denylist
+     loop already uses for its own `scan_targets`. The prior version of
+     `test_overlay_scan_files_empty_array_is_nounset_safe` used `--files0`
+     with empty stdin, which made `files` itself empty and exited the
+     script at the very first "no files" shortcut — never reaching the
+     overlay loop at all. Replaced with a construction (`_nonexistent_file_scenario`)
+     that keeps `files` non-empty while forcing `overlay_scan_files` empty,
+     and two dedicated tests for the two reproduced symptoms (phantom
+     `(standard input)` match, and an outright hang).
 """
 
 from __future__ import annotations
@@ -358,23 +376,96 @@ def test_empty_overlay_array_is_nounset_safe_on_a_matched_run_too(tmp_path):
     assert "unbound variable" not in p.stderr.decode()
 
 
-def test_overlay_scan_files_empty_array_is_nounset_safe(tmp_path):
-    """⚠️ Round-1 regression guard: `overlay_scan_files` is a NEW array (the
-    overlay's own file list, independent of the denylist's `existing_files`)
-    and it can legitimately be empty — e.g. every path in the explicit list
-    was deleted or never existed. An overlay WITH real patterns but nothing
-    to scan them against must not abort under bash 3.2's nounset; it must
-    just find nothing."""
+def _nonexistent_file_scenario(tmp_path):
+    """Builds the shape round-2 review needed: `files` NON-empty (one
+    positional argument naming a path) but `overlay_scan_files` EMPTY
+    (that path does not exist anywhere, so the `[[ -f "$f" ]]` filter drops
+    it). A plain positional arg is used rather than `--files0`, because
+    `--files0` reads ITS file list from the same stdin a buggy overlay loop
+    would fall back to — which would consume the very stdin this scenario
+    needs free to prove the regression with. `dl.txt` itself is never
+    added to `files` at all here (no `--all-tracked`), so it cannot
+    accidentally supply a real file to `overlay_scan_files` the way it did
+    in an earlier, broken version of this test."""
     r = repo(tmp_path)
     (r / "dl.txt").write_text(CREDENTIAL_PROBE + "\n")
-    (r / "real.md").write_text("clean prose\n")
     add(r)
-    p = run(r, "--denylist=dl.txt", "--files0", overlay=IDENTITY_PROBE,
+    return r
+
+
+def test_overlay_scan_files_empty_array_is_nounset_safe(tmp_path):
+    """⚠️ `overlay_scan_files` is a NEW array (the overlay's own file list,
+    independent of the denylist's `existing_files`) and it can legitimately
+    be empty. An overlay WITH real patterns but nothing left to scan them
+    against must not abort under bash 3.2's nounset."""
+    r = _nonexistent_file_scenario(tmp_path)
+    p = run(r, "--denylist=dl.txt", "ghost.md", overlay=IDENTITY_PROBE,
             bash="/bin/bash")
-    # stdin is empty -> the explicit file list resolves to zero files.
     err = p.stderr.decode()
     assert "unbound variable" not in err, f"got:\n{err}"
     assert p.returncode == CLEAN, f"stderr:\n{err}"
+
+
+# --- #8: the overlay must not fall back to reading the process's own stdin
+#     when its file list is empty (round-2 review; BLOCKING) ----------------
+#
+# ⚠️ `grep -f <pattern-file> <files...>` with ZERO file operands does not
+# skip the scan — it falls back to reading grep's OWN stdin as an implicit
+# sole input, exactly as POSIX specifies ("If no file operands are
+# specified, the standard input shall be used"). Two reproduced failure
+# modes without a guard: a TTY (or any open, not-yet-EOF stdin — a local
+# run, the pre-push gate) hangs forever; a piped stdin WITH data gets
+# scanned as a phantom "(standard input)" file, inventing a violation out
+# of whatever unrelated bytes happened to be on the pipe. Verified by
+# mutation before committing the fix: with the guard stripped out of a
+# throwaway copy of the script, both symptoms reproduced exactly as
+# described (phantom `(standard input)` match / exit 1, and a hang past a
+# multi-second timeout); with the guard restored, neither does.
+
+def test_overlay_does_not_invent_a_phantom_violation_from_piped_stdin(tmp_path):
+    """The 'pipe stdin with data' half. Stdin carries data that CONTAINS
+    the overlay probe — if the guard were missing, grep would read it as
+    an implicit input file and report a match at `(standard input):1`."""
+    r = _nonexistent_file_scenario(tmp_path)
+    stdin_bytes = f"unrelated data mentioning {IDENTITY_PROBE} that must never be scanned\n".encode()
+    p = subprocess.run(
+        ["/bin/bash", str(SCRIPT), "--denylist=dl.txt", "ghost.md"],
+        cwd=r, input=stdin_bytes, capture_output=True, timeout=15,
+        env={"PATH": "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin",
+             "ARQTOS_FIREWALL_IDENTITY_OVERLAY": IDENTITY_PROBE})
+    combined = p.stdout.decode() + p.stderr.decode()
+    assert "(standard input)" not in combined, (
+        f"the overlay grep fell back to scanning the process's own stdin as "
+        f"a phantom file:\n{combined}")
+    assert p.returncode == CLEAN, (
+        f"expected clean (nothing left for the overlay to scan), got "
+        f"{p.returncode}\n{combined}")
+
+
+def test_overlay_does_not_hang_on_a_blocking_stdin(tmp_path):
+    """The TTY half. Stdin is an open pipe with no data and no EOF yet —
+    exactly what a real TTY looks like to a blocking reader. Uses `wait()`,
+    never `communicate()`: `communicate()` closes the child's stdin as part
+    of its own protocol even when given no input, which would silently turn
+    this into the OTHER case (immediate EOF) and prove nothing about a hang.
+    A short timeout keeps a regression a FAILED test, never an actually
+    hung suite."""
+    r = _nonexistent_file_scenario(tmp_path)
+    proc = subprocess.Popen(
+        ["/bin/bash", str(SCRIPT), "--denylist=dl.txt", "ghost.md"],
+        cwd=r, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        env={"PATH": "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin",
+             "ARQTOS_FIREWALL_IDENTITY_OVERLAY": IDENTITY_PROBE})
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+        pytest.fail(
+            "the overlay loop blocked on stdin instead of skipping a rule "
+            "with nothing left to scan -- this is the hang a real TTY (or "
+            "the pre-push gate) would hit forever, not just for 10s")
+    assert proc.returncode == CLEAN, f"expected clean, got {proc.returncode}"
 
 
 # --- #6: the overlay pattern never reaches a child process's argv ----------

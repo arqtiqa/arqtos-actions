@@ -275,6 +275,23 @@ overlay_lineno=0
 for line in "${overlay_rules[@]+"${overlay_rules[@]}"}"; do
   overlay_lineno=$((overlay_lineno + 1))
 
+  # ⚠️ BLOCKING (arqtos#342 round-2 review): same guard the denylist loop
+  # below applies to its own `scan_targets`, and for the same reason --
+  # `grep -f <pattern-file> <files...>` with ZERO file operands does not
+  # skip the scan, it falls back to reading grep's OWN STDIN as an implicit
+  # single input. Before this restructure, `overlay_scan_files` reused
+  # `existing_files`, which the removed `exit 0` guaranteed was non-empty by
+  # the time either loop ran. That guarantee is gone now that the overlay
+  # runs ahead of and independently from that filtering, so this loop needs
+  # its own check. Two reproduced failure modes without it: a TTY stdin (a
+  # local run, or the pre-push gate) hangs forever waiting for input that
+  # never comes; a piped stdin WITH data gets scanned as a phantom
+  # "(standard input)" file, inventing a violation out of whatever
+  # unrelated bytes happened to be on the pipe.
+  if (( ${#overlay_scan_files[@]} == 0 )); then
+    continue
+  fi
+
   : >"$grep_stderr"
   # ⚠️ `-f <(printf '%s\n' "$line")`, NEVER `-e "$line"` (arqtos#342 round-1
   # review). `-e` puts the pattern on GREP'S OWN ARGV, and argv is a
