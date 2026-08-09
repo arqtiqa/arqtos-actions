@@ -49,8 +49,12 @@ inputs:
     description: >-
       Identity-tier pattern TEXT (one pattern per line -- NOT a path, unlike
       `denylist` above) for the org secret `ARQTOS_FIREWALL_IDENTITY_OVERLAY`
-      (arqtiqa/arqtos#342), e.g.
-      `identity-overlay: ${{ secrets.ARQTOS_FIREWALL_IDENTITY_OVERLAY }}`.
+      (arqtiqa/arqtos#342). Wire it in the caller's workflow the same way any
+      secret reaches a composite action's input -- `identity-overlay:` set to
+      `secrets.ARQTOS_FIREWALL_IDENTITY_OVERLAY` -- shown here without its
+      enclosing double-brace expression syntax so this description does not
+      itself embed a live expression (a composite action has no `secrets`
+      context of its own).
       Identity patterns are never committed anywhere -- embedding them would
       compile confidential regex text into a world-readable release asset --
       so this is the only way to supply them, and it is unioned with
