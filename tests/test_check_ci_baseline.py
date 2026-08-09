@@ -275,3 +275,66 @@ def test_an_ACTION_DEFINITION_is_still_checked_for_off_baseline_pins(tmp_path, c
         "runs:\n  using: composite\n  steps:\n    - uses: actions/checkout@v4\n")
     assert run(root, mpath) == VIOLATION
     assert "expected @v7" in capsys.readouterr().err
+
+
+# --- ⚠️ doubled CI: pull_request + an unfiltered push run every PR commit twice
+
+WF_DOUBLED = """
+on:
+  push:
+  pull_request:
+jobs:
+  a:
+    steps:
+      - uses: actions/checkout@v7
+"""
+
+WF_SCOPED = """
+on:
+  pull_request:
+  push:
+    branches: [main]
+jobs:
+  a:
+    steps:
+      - uses: actions/checkout@v7
+"""
+
+WF_PUSH_ONLY = """
+on:
+  push:
+    tags: ['v*']
+jobs:
+  a:
+    steps:
+      - uses: actions/checkout@v7
+"""
+
+WF_DISPATCH_AND_SCHEDULE = """
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 3 * * *'
+jobs:
+  a:
+    steps:
+      - uses: actions/checkout@v7
+"""
+
+
+def test_unfiltered_push_with_pull_request_is_a_VIOLATION(tmp_path, capsys):
+    assert run(*build(tmp_path, WF_DOUBLED)) == VIOLATION
+    # positive: the message must name the FIX, not merely report that a rule fired
+    assert "branches: [main]" in capsys.readouterr().err
+
+
+def test_scoped_push_with_pull_request_passes(tmp_path):
+    assert run(*build(tmp_path, WF_SCOPED)) == OK
+
+
+def test_push_only_workflow_passes(tmp_path):
+    assert run(*build(tmp_path, WF_PUSH_ONLY)) == OK
+
+
+def test_workflow_dispatch_and_schedule_pass(tmp_path):
+    assert run(*build(tmp_path, WF_DISPATCH_AND_SCHEDULE)) == OK

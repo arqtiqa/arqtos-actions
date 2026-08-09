@@ -8,8 +8,10 @@ consumer's workflows and pre-commit config:
      `actions/setup-python`)
   2. a governed action pinned off the manifest
   3. two versions of the same action inside one repository
+  4. a workflow declaring `pull_request` alongside an unfiltered `push`, which
+     runs — and bills — every PR-branch commit twice
 
-⚠️ THREE DESIGN RULES, EACH FROM A DEFECT RATHER THAN A PREFERENCE.
+⚠️ FOUR DESIGN RULES, EACH FROM A DEFECT RATHER THAN A PREFERENCE.
 
 FAIL CLOSED. If the manifest is missing or unparseable this exits 2. A checker
 with nothing to check against reports every subject clean, which looks like a
@@ -73,6 +75,41 @@ class Manifest:
     exempt: set[str] = field(default_factory=set)
     no_direct_ref: set[str] = field(default_factory=set)
     path: str = ""
+
+
+def _workflow_on_block(text: str) -> object | None:
+    """Return a workflow's `on:` value, in whatever shape it was written
+    (string / list / dict), or `None` if there is no `on:` block at all.
+
+    ⚠️ YAML 1.1 boolean resolution turns the bare key `on` into the boolean
+    `True` — the classic GitHub Actions authoring gotcha — so PyYAML parses
+    `on:\\n  push:` into `{True: {'push': None}}`, not `{'on': ...}`. Both
+    spellings are checked; a workflow that is not even valid YAML, or whose
+    top level is not a mapping, is treated the same as "no `on:` block" —
+    this rule only ever adds a finding, it never turns a parse wobble into a
+    crash.
+    """
+    try:
+        doc = yaml.safe_load(text)
+    except yaml.YAMLError:
+        return None
+    if not isinstance(doc, dict):
+        return None
+    if True in doc:
+        return doc[True]
+    return doc.get("on")
+
+
+def _trigger_names(on_block: object) -> set[str]:
+    """The trigger keywords declared, regardless of which of the three legal
+    `on:` shapes (bare string, list, or mapping) the author used."""
+    if isinstance(on_block, str):
+        return {on_block}
+    if isinstance(on_block, list):
+        return {str(x) for x in on_block}
+    if isinstance(on_block, dict):
+        return set(on_block.keys())
+    return set()
 
 
 def _strip_comments(text: str) -> str:
@@ -243,6 +280,32 @@ def scan_repo(root: Path, m: Manifest, exceptions: dict[str, str]) -> list[Findi
                     "use the python-toolchain action and invoke commands as "
                     "`uv run --locked <cmd>`.",
                 ))
+
+        # ⚠️ Doubled CI: `pull_request` plus a `push` with no `branches:` or
+        # `branches-ignore:` filter fires BOTH events for every commit on a PR
+        # branch, so every job in this workflow runs — and bills — twice. Only
+        # a genuine workflow declares `on:`, so this is scoped to the
+        # `.github/workflows/` surface; an action definition's `runs:` block
+        # never has one, and would just read as "no `on:` block" anyway.
+        if rel.startswith(".github/workflows/"):
+            on_block = _workflow_on_block(text)
+            triggers = _trigger_names(on_block)
+            if "pull_request" in triggers and "push" in triggers:
+                push_spec = on_block.get("push") if isinstance(on_block, dict) else None
+                filtered = isinstance(push_spec, dict) and (
+                    "branches" in push_spec or "branches-ignore" in push_spec
+                )
+                if not filtered:
+                    findings.append(Finding(
+                        "pull_request and an unfiltered push: double every PR-branch commit",
+                        rel,
+                        "on: declares both `pull_request` and `push` with no `branches:` "
+                        "or `branches-ignore:` filter, so every push to a PR branch fires "
+                        "both events and this workflow's jobs run — and bill — twice.",
+                        f"scope the push trigger, e.g. add `branches: [main]` under "
+                        f"{rel}'s `push:` key so it only fires outside a PR, or drop the "
+                        f"`push:` trigger entirely if `pull_request` coverage is enough.",
+                    ))
 
         for mt in USES_RE.finditer(text):
             action, ref = mt.group(1), mt.group(2)
