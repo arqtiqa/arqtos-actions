@@ -32,6 +32,19 @@ inputs:
       files (`git ls-files`).
     required: false
     default: ''
+  exemptions:
+    description: >-
+      Path to a caller-supplied path+rule exemptions file (arqtiqa/arqtos-cli#851
+      format: three MANDATORY fields per line, `<path-glob>  <rule>  <reason>`,
+      a tab or 2+ spaces between fields). Optional -- when empty (the
+      default), the script itself falls back to `.firewallignore` at the
+      repository root if present; a missing DEFAULT is fine (no exemptions
+      committed yet). An explicitly-set value naming a path that does not
+      exist is a configuration error (exit 2). A stale entry -- a path glob
+      matching no tracked file, or a rule matching no pattern in this run's
+      denylist -- is ALSO a configuration error, never a silent no-op.
+    required: false
+    default: ''
 
 runs:
   using: composite
@@ -41,6 +54,7 @@ runs:
       env:
         INPUT_DENYLIST: ${{ inputs.denylist }}
         INPUT_FILES: ${{ inputs.files }}
+        INPUT_EXEMPTIONS: ${{ inputs.exemptions }}
       run: |
         set -euo pipefail
 
@@ -67,6 +81,15 @@ runs:
           exit 2
         fi
 
+        # Only pass --exemptions through when the caller actually set one --
+        # an empty input must fall to the SCRIPT's own default resolution
+        # (.firewallignore at the repo root, absent-is-fine), not to a
+        # literal empty path the script would then treat as explicitly named.
+        exemptions_arg=()
+        if [[ -n "$INPUT_EXEMPTIONS" ]]; then
+          exemptions_arg=("--exemptions=$INPUT_EXEMPTIONS")
+        fi
+
         # ⚠️ The default path delegates the file listing TO THE SCRIPT, which
         # builds it NUL-delimited from `git ls-files -z`. It used to be
         # `git ls-files | xargs` right here, and that silently dropped every
@@ -84,7 +107,7 @@ runs:
           # gate that caught something. The script now reads the NUL-delimited
           # list itself, so the status the caller sees is the script's.
           printf '%s' "$INPUT_FILES" | tr '\n' '\0' \
-            | "$script" "--denylist=$INPUT_DENYLIST" --files0
+            | "$script" "--denylist=$INPUT_DENYLIST" "${exemptions_arg[@]+"${exemptions_arg[@]}"}" --files0
         else
-          "$script" "--denylist=$INPUT_DENYLIST" --all-tracked
+          "$script" "--denylist=$INPUT_DENYLIST" "${exemptions_arg[@]+"${exemptions_arg[@]}"}" --all-tracked
         fi
