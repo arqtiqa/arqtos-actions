@@ -30,6 +30,26 @@ These tests prove five things, each of which cost someone an incident before:
      `"${arr[@]}"` on an empty array aborts under `set -u`. This file's
      helper invokes `/bin/bash` explicitly (not just the shebang) for the
      one test that would abort first if that guard were ever dropped.
+
+Round 1 review (same Story) found two more, both fixed here and pinned below:
+
+  6. The overlay pattern was reaching a CHILD PROCESS's own argv via
+     `grep -e "$line"`. Argv is a WEAKER channel than the env var this
+     script reads the overlay from in the first place — on Linux,
+     `/proc/<pid>/cmdline` is world-readable while `/proc/<pid>/environ`
+     is owner-only, so the hop made the pattern LESS protected, not more.
+     Fixed by feeding the pattern through `-f <(printf '%s\n' "$line")`
+     instead — verified here with a `grep` shim that records its own argv,
+     so the absence of the pattern text is observed, not assumed.
+  7. The overlay was reusing the denylist's `existing_files`, which drops
+     (a) the denylist file itself, (b) a byte-identical vendored copy of
+     it, and (c) the exemptions file — a rationale specific to a pattern
+     list matching its OWN literal text, which does not extend to an
+     identity string that can plausibly sit in any of those three files
+     (a denylist header, for instance). Fixed by giving the overlay its
+     own file list with none of those three skips; pinned in both
+     directions below — the overlay must now see all three, and the
+     denylist must still skip them.
 """
 
 from __future__ import annotations
@@ -336,3 +356,211 @@ def test_empty_overlay_array_is_nounset_safe_on_a_matched_run_too(tmp_path):
     p = run(r, "--denylist=dl.txt", "--all-tracked", overlay=None, bash="/bin/bash")
     assert p.returncode == MATCHED
     assert "unbound variable" not in p.stderr.decode()
+
+
+def test_overlay_scan_files_empty_array_is_nounset_safe(tmp_path):
+    """⚠️ Round-1 regression guard: `overlay_scan_files` is a NEW array (the
+    overlay's own file list, independent of the denylist's `existing_files`)
+    and it can legitimately be empty — e.g. every path in the explicit list
+    was deleted or never existed. An overlay WITH real patterns but nothing
+    to scan them against must not abort under bash 3.2's nounset; it must
+    just find nothing."""
+    r = repo(tmp_path)
+    (r / "dl.txt").write_text(CREDENTIAL_PROBE + "\n")
+    (r / "real.md").write_text("clean prose\n")
+    add(r)
+    p = run(r, "--denylist=dl.txt", "--files0", overlay=IDENTITY_PROBE,
+            bash="/bin/bash")
+    # stdin is empty -> the explicit file list resolves to zero files.
+    err = p.stderr.decode()
+    assert "unbound variable" not in err, f"got:\n{err}"
+    assert p.returncode == CLEAN, f"stderr:\n{err}"
+
+
+# --- #6: the overlay pattern never reaches a child process's argv ----------
+
+GREP_SHIM = """#!/bin/sh
+printf 'ARGV:' >> "$GREP_ARGV_LOG"
+for a in "$@"; do printf ' [%s]' "$a" >> "$GREP_ARGV_LOG"; done
+printf '\\n' >> "$GREP_ARGV_LOG"
+exec /usr/bin/grep "$@"
+"""
+
+
+def test_overlay_pattern_never_reaches_greps_own_argv(tmp_path):
+    """⚠️ Round-1 finding. `grep -e "$line"` puts the OVERLAY pattern on a
+    CHILD process's command line — on Linux, /proc/<pid>/cmdline is
+    world-readable while /proc/<pid>/environ (where this script itself reads
+    the overlay from) is owner-only, so that hop makes a confidential
+    identity pattern LESS protected than it was one step earlier. Verified
+    directly with a `grep` shim that records its own argv to a file — the
+    absence of the pattern text is OBSERVED here, not inferred from exit
+    codes or report output."""
+    shim_dir = tmp_path / "shimbin"
+    shim_dir.mkdir()
+    grep_shim = shim_dir / "grep"
+    grep_shim.write_text(GREP_SHIM)
+    grep_shim.chmod(0o755)
+    argv_log = tmp_path / "grep_argv.log"
+
+    r = repo(tmp_path)
+    (r / "dl.txt").write_text(CREDENTIAL_PROBE + "\n")
+    (r / "leak.md").write_text(f"identity leak: {IDENTITY_PROBE} here\n")
+    add(r)
+
+    env = {
+        "PATH": f"{shim_dir}:/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin",
+        "ARQTOS_FIREWALL_IDENTITY_OVERLAY": IDENTITY_PROBE,
+        "GREP_ARGV_LOG": str(argv_log),
+    }
+    p = subprocess.run([str(SCRIPT), "--denylist=dl.txt", "--all-tracked"],
+                        cwd=r, capture_output=True, env=env)
+    assert p.returncode == MATCHED, f"stderr:\n{p.stderr.decode()}"
+
+    argv_log_text = argv_log.read_text() if argv_log.exists() else ""
+    assert argv_log_text, "the grep shim never recorded an invocation"
+    assert IDENTITY_PROBE not in argv_log_text, (
+        f"the overlay pattern reached a child process's argv:\n{argv_log_text}")
+    # Positive control: the CREDENTIAL pattern is still on `-e`'s argv, same
+    # as before this round — only the overlay hop changed.
+    assert CREDENTIAL_PROBE in argv_log_text, (
+        f"the denylist loop's own -e usage should be untouched:\n{argv_log_text}")
+    assert " -f " in argv_log_text or "[-f]" in argv_log_text, (
+        f"expected the overlay grep call to use -f; got:\n{argv_log_text}")
+
+
+def test_overlay_leading_hyphen_pattern_still_applies_via_dash_f(tmp_path):
+    """A nice side effect of `-f`: a pattern beginning with `-` was never
+    grep's problem in the first place when fed via a file rather than argv
+    (unlike the denylist's own `-e` loop, which needs `-e` for exactly this
+    reason). Confirms the fix didn't accidentally break this class."""
+    r = repo(tmp_path)
+    (r / "dl.txt").write_text(CREDENTIAL_PROBE + "\n")
+    hyphen_pattern = "-----BEGIN [A-Z ]*PRIVATE KEY-----"
+    (r / "leak.md").write_text("-----BEGIN OPENSSH PRIVATE KEY-----\n")
+    add(r)
+    p = run(r, "--denylist=dl.txt", "--all-tracked", overlay=hyphen_pattern)
+    assert p.returncode == MATCHED, f"stderr:\n{p.stderr.decode()}"
+
+
+# --- #7: the three denylist self-skips do NOT apply to the overlay ---------
+
+def test_overlay_scans_the_denylist_file_itself(tmp_path):
+    """⚠️ Round-1 finding #2. The denylist skips itself (its own rule text
+    self-matches). An identity string sitting in the denylist's own header
+    is a real, cited scenario (`denylists/work.txt`'s header) — the overlay
+    must still catch it."""
+    r = repo(tmp_path)
+    (r / "dl.txt").write_text(f"# header mentioning {IDENTITY_PROBE}\n{CREDENTIAL_PROBE}\n")
+    (r / "other.md").write_text("clean prose\n")
+    add(r)
+    p = run(r, "--denylist=dl.txt", "--all-tracked", overlay=IDENTITY_PROBE)
+    assert p.returncode == MATCHED, (
+        f"the overlay must scan the denylist file itself; got {p.returncode}\n"
+        f"stderr:\n{p.stderr.decode()}")
+
+
+def test_denylist_still_self_skips_while_overlay_scans_the_same_file(tmp_path):
+    """The other direction, in the SAME fixture: the denylist's own
+    self-skip must be untouched — its own pattern text must not self-match
+    — even though the overlay now scans that exact file."""
+    r = repo(tmp_path)
+    (r / "dl.txt").write_text(f"# header mentioning {IDENTITY_PROBE}\n{CREDENTIAL_PROBE}\n")
+    (r / "other.md").write_text("clean prose\n")
+    add(r)
+    # No overlay: the denylist's own rule text must not self-match its own file.
+    p = run(r, "--denylist=dl.txt", "--all-tracked", overlay=None)
+    assert p.returncode == CLEAN, (
+        f"the denylist's self-skip must still hold; got {p.returncode}\n"
+        f"stderr:\n{p.stderr.decode()}")
+
+
+def test_overlay_scans_a_byte_identical_vendored_denylist_copy(tmp_path):
+    """The denylist's vendored-copy skip (arqtos#343) must not extend to the
+    overlay either — an identity string in a vendored copy is just as real
+    a leak as one in the primary denylist."""
+    r = repo(tmp_path)
+    dl_text = f"# header mentioning {IDENTITY_PROBE}\n{CREDENTIAL_PROBE}\n"
+    (r / "dl.txt").write_text(dl_text)
+    (r / "sub").mkdir()
+    (r / "sub" / "dl.txt").write_text(dl_text)  # byte-identical vendored copy
+    add(r)
+    p = run(r, "--denylist=dl.txt", "--all-tracked", overlay=IDENTITY_PROBE)
+    assert p.returncode == MATCHED, (
+        f"the overlay must scan a vendored denylist copy too; got {p.returncode}\n"
+        f"stderr:\n{p.stderr.decode()}")
+
+
+def test_denylist_still_skips_the_vendored_copy_while_overlay_scans_it(tmp_path):
+    r = repo(tmp_path)
+    dl_text = f"# header mentioning {IDENTITY_PROBE}\n{CREDENTIAL_PROBE}\n"
+    (r / "dl.txt").write_text(dl_text)
+    (r / "sub").mkdir()
+    (r / "sub" / "dl.txt").write_text(dl_text)
+    add(r)
+    p = run(r, "--denylist=dl.txt", "--all-tracked", overlay=None)
+    err = p.stderr.decode()
+    assert p.returncode == CLEAN, f"stderr:\n{err}"
+    assert "skipping vendored denylist" in err, f"got:\n{err}"
+
+
+def test_overlay_scans_the_firewallignore_file(tmp_path):
+    """The exemptions file's skip (its <rule> column is literal denylist-
+    pattern text) must not extend to the overlay — an identity string in a
+    `.firewallignore` reason field is a real, plausible leak."""
+    r = repo(tmp_path)
+    (r / "dl.txt").write_text(CREDENTIAL_PROBE + "\n")
+    (r / ".firewallignore").write_text(
+        f"*.md\t{CREDENTIAL_PROBE}\treason mentioning {IDENTITY_PROBE}\n")
+    (r / "other.md").write_text(f"leak {CREDENTIAL_PROBE} here\n")
+    add(r)
+    p = run(r, "--denylist=dl.txt", "--all-tracked", overlay=IDENTITY_PROBE)
+    assert p.returncode == MATCHED, (
+        f"the overlay must scan .firewallignore too; got {p.returncode}\n"
+        f"stderr:\n{p.stderr.decode()}")
+
+
+def test_denylist_exemption_still_applies_while_overlay_scans_firewallignore(tmp_path):
+    r = repo(tmp_path)
+    (r / "dl.txt").write_text(CREDENTIAL_PROBE + "\n")
+    (r / ".firewallignore").write_text(
+        f"*.md\t{CREDENTIAL_PROBE}\treason mentioning {IDENTITY_PROBE}\n")
+    (r / "other.md").write_text(f"leak {CREDENTIAL_PROBE} here\n")
+    add(r)
+    p = run(r, "--denylist=dl.txt", "--all-tracked", overlay=None)
+    err = p.stderr.decode()
+    assert p.returncode == CLEAN, (
+        f"the denylist's exemption for other.md must still apply; got "
+        f"{p.returncode}\nstderr:\n{err}")
+    assert "exempted" in err, f"got:\n{err}"
+
+
+def test_overlay_violation_survives_even_when_the_denylist_has_nothing_left_to_scan(tmp_path):
+    """⚠️ Control-flow regression guard for the round-1 fix. When the only
+    files in a run are the denylist and the exemptions file, the DENYLIST
+    side's `existing_files` is empty — the script used to `exit 0` right
+    there, before the overlay (previously positioned after that shortcut)
+    ever ran. The overlay must now still be evaluated and its violation
+    must still surface, since it runs on its own file list, ahead of that
+    shortcut."""
+    r = repo(tmp_path)
+    (r / "dl.txt").write_text(f"# header mentioning {IDENTITY_PROBE}\n{CREDENTIAL_PROBE}\n")
+    (r / ".firewallignore").write_text(f"*.md\t{CREDENTIAL_PROBE}\tsynthetic\n")
+    add(r)
+    p = run(r, "--denylist=dl.txt", "--all-tracked", overlay=IDENTITY_PROBE)
+    assert p.returncode == MATCHED, (
+        f"an overlay violation must not be swallowed just because the "
+        f"denylist side has nothing left to scan; got {p.returncode}\n"
+        f"stderr:\n{p.stderr.decode()}")
+
+
+def test_clean_when_neither_side_has_anything_to_scan_or_match(tmp_path):
+    """Control for the test above — the same empty-existing_files shape,
+    but with no overlay match either, must still report clean (not
+    accidentally always-1 after the control-flow change)."""
+    r = repo(tmp_path)
+    (r / "dl.txt").write_text(CREDENTIAL_PROBE + "\n")
+    (r / ".firewallignore").write_text(f"*.md\t{CREDENTIAL_PROBE}\tsynthetic\n")
+    add(r)
+    p = run(r, "--denylist=dl.txt", "--all-tracked", overlay=None)
+    assert p.returncode == CLEAN, f"stderr:\n{p.stderr.decode()}"

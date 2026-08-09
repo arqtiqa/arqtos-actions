@@ -232,6 +232,86 @@ if (( ${#files[@]} == 0 )); then
   exit 0
 fi
 
+# ---------------------------------------------------------------------------
+# Identity-tier overlay scan (arqtiqa/arqtos#342). Runs HERE, over its OWN
+# file list, BEFORE the denylist-specific filtering below — deliberately,
+# per round-1 review:
+#
+# ⚠️ THE DENYLIST'S THREE SELF-SKIPS DO NOT APPLY TO THE OVERLAY.
+#
+# `existing_files` below drops (a) the denylist file itself, (b) a
+# byte-identical vendored copy of it, and (c) the exemptions file, because a
+# DENYLIST's own rule text self-matches its own patterns — the literal
+# regex source sits right there in the file being scanned. That rationale
+# is specific to a pattern list scanning ITSELF; an identity STRING is
+# different content, and it can plausibly appear in any of those three
+# files without being the overlay's own source text — `denylists/work.txt`'s
+# own header, cited in this Story's own brief, is exactly that case. Reusing
+# `existing_files` for the overlay would silently create three permanent
+# blind spots with no analogous justification, so the overlay scans its own
+# list instead: `overlay_scan_files`, built straight from `files` with only
+# the "exists as a regular file" filter, none of the three skips.
+#
+# This also means the overlay must run even when `existing_files` (below)
+# ends up EMPTY — e.g. a run whose only files are the denylist and the
+# exemptions file — so it runs ahead of that filtering, and the violations
+# tally it contributes to survives regardless of what the denylist side
+# goes on to find.
+# ---------------------------------------------------------------------------
+overlay_scan_files=()
+for f in "${files[@]+"${files[@]}"}"; do
+  [[ -f "$f" ]] && overlay_scan_files+=("$f")
+done
+
+# grep's diagnostics go here so they can be SURFACED rather than discarded.
+# Shared by this loop and the denylist loop further down.
+grep_stderr=$(mktemp)
+trap 'rm -f "$grep_stderr"' EXIT
+
+violations=0
+exempted_pairs=0
+
+overlay_lineno=0
+for line in "${overlay_rules[@]+"${overlay_rules[@]}"}"; do
+  overlay_lineno=$((overlay_lineno + 1))
+
+  : >"$grep_stderr"
+  # ⚠️ `-f <(printf '%s\n' "$line")`, NEVER `-e "$line"` (arqtos#342 round-1
+  # review). `-e` puts the pattern on GREP'S OWN ARGV, and argv is a
+  # DIFFERENT, LESS-PROTECTED channel than the env var this script was
+  # otherwise careful to read the overlay from: on Linux, /proc/<pid>/cmdline
+  # is world-readable while /proc/<pid>/environ is owner-only, so handing an
+  # env-sourced secret to a child process via -e makes it LESS protected
+  # after the hop than before it — the exact confidential-identity-regex
+  # leak this Story exists to close, one process later. A process-substituted
+  # file descriptor keeps the pattern text off every process's argv. `-f`
+  # reads one pattern per line, same as `-e` reads one pattern per
+  # invocation — behaviourally identical for a single pattern (see the test
+  # suite's byte-for-byte match/exit-code proof). The denylist loop further
+  # down is left on `-e` deliberately: those patterns are committed and
+  # public, so this hop protects nothing there.
+  matches=$(grep -nIHE -f <(printf '%s\n' "$line") "${overlay_scan_files[@]+"${overlay_scan_files[@]}"}" 2>"$grep_stderr") \
+    && grep_status=0 || grep_status=$?
+
+  if (( grep_status >= 2 )); then
+    echo "✗ check-private-content: grep could not apply identity overlay pattern #$overlay_lineno (exit $grep_status)." >&2
+    if [[ -s "$grep_stderr" ]]; then
+      sed 's/^/    grep: /' "$grep_stderr" >&2
+    fi
+    echo "" >&2
+    echo "  The pattern's own text is withheld here on purpose (arqtiqa/arqtos-cli#1009)" >&2
+    echo "  -- fix it at its source, the ARQTOS_FIREWALL_IDENTITY_OVERLAY secret. An" >&2
+    echo "  identity pattern that never ran cannot be reported as clean." >&2
+    exit 2
+  fi
+
+  if (( grep_status == 0 )) && [[ -n "$matches" ]]; then
+    echo "✗ pattern: [identity overlay pattern #$overlay_lineno -- text withheld, arqtiqa/arqtos-cli#1009]" >&2
+    printf '%s\n' "$matches" | sed 's/^/    /' >&2
+    violations=$((violations + 1))
+  fi
+done
+
 # Filter to existing regular files (handle deletes + non-regular paths).
 # Skip the denylist file itself — its patterns naturally match themselves
 # (the literal text inside the regexes), which would create a recursive
@@ -284,19 +364,25 @@ for f in "${files[@]+"${files[@]}"}"; do
   fi
   existing_files+=("$f")
 done
-if (( ${#existing_files[@]} == 0 )); then
-  exit 0
-fi
+
+# ⚠️ NOT an early `exit 0` on empty `existing_files` (arqtos#342 round 1):
+# the overlay loop above may already have recorded violations even when the
+# denylist side has nothing left to scan (e.g. this run's only files were
+# the denylist and the exemptions file, both excluded above). Exiting here
+# would silently drop those. The denylist-specific work below is skipped
+# when there is nothing for IT to scan, but the shared violations tally at
+# the bottom of the script is always reached.
+if (( ${#existing_files[@]} > 0 )); then
 
 # ---------------------------------------------------------------------------
 # Exemptions (arqtiqa/arqtos-cli#851 format and rationale; #986's
 # fail-closed-before-scan ordering; #998's stale-glob widening). Parsed and
 # VALIDATED here, before any scanning happens below — exactly like the
 # denylist's own rule-count guard above. Reached only once we know there is
-# at least one real file to scan (the "nothing to check" shortcuts above
-# already exited 0), which covers every real invocation of this gate
+# at least one real file for the DENYLIST side to scan (`existing_files` is
+# non-empty here), which covers every real invocation of this gate
 # (`--all-tracked` in CI always has files) and keeps that pre-existing
-# zero-files exit code untouched by this feature.
+# zero-files behaviour untouched by this feature.
 # ---------------------------------------------------------------------------
 
 # glob_to_ere GLOB — translate a filepath.Match-style glob (`*`/`?` never
@@ -485,13 +571,10 @@ if [[ -f "$exemptions" ]]; then
   fi
 fi
 
-# grep's diagnostics go here so they can be SURFACED rather than discarded.
-# See the exit-status handling below for why this file has to exist.
-grep_stderr=$(mktemp)
-trap 'rm -f "$grep_stderr"' EXIT
-
-violations=0
-exempted_pairs=0
+# grep_stderr/trap, $violations and $exempted_pairs are already declared
+# above (shared with the overlay loop, which must run even when there is
+# nothing here for the denylist side to scan) -- only this loop's own
+# counter is local to it.
 rule_lineno=0
 while IFS= read -r line; do
   rule_lineno=$((rule_lineno + 1))
@@ -603,44 +686,7 @@ while IFS= read -r line; do
   fi
 done < "$denylist"
 
-# ---------------------------------------------------------------------------
-# Identity-tier overlay scan (arqtiqa/arqtos#342). A second, deliberately
-# SIMPLER pass over the same `existing_files` -- no interaction with the
-# exemptions mechanism above, on purpose: `.firewallignore` is a COMMITTED,
-# PUBLIC file whose <rule> column must equal a pattern's exact text, so
-# exempting an overlay pattern there would mean committing the very
-# confidential regex the overlay exists to keep uncommitted. Overlay
-# patterns are therefore not exemptable at all — same three-way grep exit
-# handling as the denylist loop above (0 match / 1 clean / 2 fail-closed),
-# but NEVER echoing the pattern's own text, on either the match or the
-# compile-failure path (arqtiqa/arqtos-cli#1009).
-# ---------------------------------------------------------------------------
-overlay_lineno=0
-for line in "${overlay_rules[@]+"${overlay_rules[@]}"}"; do
-  overlay_lineno=$((overlay_lineno + 1))
-
-  : >"$grep_stderr"
-  matches=$(grep -nIHE -e "$line" "${existing_files[@]+"${existing_files[@]}"}" 2>"$grep_stderr") \
-    && grep_status=0 || grep_status=$?
-
-  if (( grep_status >= 2 )); then
-    echo "✗ check-private-content: grep could not apply identity overlay pattern #$overlay_lineno (exit $grep_status)." >&2
-    if [[ -s "$grep_stderr" ]]; then
-      sed 's/^/    grep: /' "$grep_stderr" >&2
-    fi
-    echo "" >&2
-    echo "  The pattern's own text is withheld here on purpose (arqtiqa/arqtos-cli#1009)" >&2
-    echo "  -- fix it at its source, the ARQTOS_FIREWALL_IDENTITY_OVERLAY secret. An" >&2
-    echo "  identity pattern that never ran cannot be reported as clean." >&2
-    exit 2
-  fi
-
-  if (( grep_status == 0 )) && [[ -n "$matches" ]]; then
-    echo "✗ pattern: [identity overlay pattern #$overlay_lineno -- text withheld, arqtiqa/arqtos-cli#1009]" >&2
-    printf '%s\n' "$matches" | sed 's/^/    /' >&2
-    violations=$((violations + 1))
-  fi
-done
+fi # (( ${#existing_files[@]} > 0 )) -- the denylist-specific block opened above
 
 # Disclosure, not silence: suppressing a match must never be indistinguishable
 # from "nothing was there to find" (same discipline as the reference Go
@@ -657,7 +703,8 @@ if (( violations > 0 )); then
   # BOTH denylist and identity-overlay hits, so a message hard-coding
   # "denylist" would misreport a run an overlay pattern alone failed.
   echo "✗ check-private-content: $violations pattern(s) matched." >&2
-  echo "  Denylist source: $denylist" >&2
+  echo "  Denylist source: $denylist (identity-overlay patterns come from" >&2
+  echo "  \$ARQTOS_FIREWALL_IDENTITY_OVERLAY, never a file)" >&2
   echo "  If a match is a true leak: remove it from the file — a placeholder in the committed" >&2
   echo "  copy, the real value supplied at runtime from the environment or a secret reference." >&2
   echo "  If a match is a false positive: refine the pattern (more specific) rather than removing it." >&2
