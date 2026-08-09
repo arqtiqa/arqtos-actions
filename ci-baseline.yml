@@ -122,6 +122,41 @@ actions:
           Pin as `<40-char-sha>  # v1` so a human can still read which release
           it corresponds to.
 
+      # ⚠️ firewall-falsifier IS SHA-PINNED TOO, for the same reason and one
+      # level up.
+      #
+      # It proves that the firewall's denylist still MATCHES — that no rule has
+      # been edited into a form which still compiles but catches nothing,
+      # deleted during an unrelated edit, or added with nothing behind it. Its
+      # failure mode is therefore identical to the gate's own:
+      #
+      #   firewall-falsifier   compromised -> ⚠️ CAN REPORT LIVE. Every rule is
+      #                        declared alive, a green check appears, and the
+      #                        firewall it vouches for may be scanning against a
+      #                        list that no longer catches anything.
+      #
+      # A subverted falsifier is strictly worse than an absent one, because an
+      # absent falsifier leaves a known gap while a subverted one closes it on
+      # paper. And its silence is UNRECOVERABLE in the same way the gate's is:
+      # what gets published while both are green cannot be un-published.
+      #
+      # ⚠️ Pin it to the SAME SHA as `firewall` in any given consumer. The
+      # falsifier drives the scanner from its own sibling directory, so a
+      # consumer that pinned the two apart would be proving one scanner build
+      # alive while a different build guards the repository — which is the most
+      # convincing possible form of no coverage.
+      firewall-falsifier:
+        pin_style: commit-sha
+        why: >-
+          The standing proof that the gate's denylist still bites. Like the gate
+          itself, its failure mode is a green check rather than a broken build,
+          so it does not get a moving reference. Bump it deliberately, and in
+          lockstep with `firewall` — the falsifier runs the scanner that sits
+          beside it at the same SHA.
+        annotate: >-
+          Pin as `<40-char-sha>  # v1` so a human can still read which release
+          it corresponds to.
+
       # ⚠️ go-fmt KEEPS `@v1` even though it, too, can fail silently-clean —
       # and that needs saying, because the rule above is stated in terms of
       # FAILURE MODE and a naive reading puts go-fmt in the SHA-pinned column.

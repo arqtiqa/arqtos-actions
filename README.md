@@ -27,6 +27,7 @@ Everything in this repository is world-readable. That makes the boundary sharp:
 | ❌ **credentials, tokens, environment dumps** | including in examples and test fixtures |
 | ❌ **anything identifying a person, machine or customer** | a real name, a personal address, a host-naming scheme, a customer name — **in any file, including a denylist** |
 | ✅ **this repo's own caller list** | `.github/scripts/private-content-denylist.txt` — generic credential *shapes* and private-network ranges, scoped to this repo's audience, read only by this repo's own `firewall` workflow |
+| ✅ **this repo's own probe corpus** | `.firewall-probes` — one **synthetic** string per rule, shaped *like* what the rule catches and never an instance of it. It is exempted per-rule in `.firewallignore`, visibly, because the gate matches it by construction — that is the file working. ⚠️ A "probe" that was a real secret would be a leak filed as a test |
 
 An action's data is public; a caller's data is the caller's. **The mechanism is shared, the patterns are not.**
 
@@ -66,6 +67,7 @@ Pin the **moving major tag** `@v1` — not `@main`, and not an exact SHA.
 | action | purpose |
 |---|---|
 | [`firewall`](.github/actions/firewall) | scans tracked files against a **caller-supplied** denylist — ships none, by design |
+| [`firewall-falsifier`](.github/actions/firewall-falsifier) | proves every rule in that denylist still **bites** — a green gate is not evidence the list still matches anything; ships no corpus, by design |
 | [`go-fmt`](.github/actions/go-fmt) | invokes the caller's `make fmt-check` — **does not run gofmt**, by design; see its README |
 | [`python-toolchain`](.github/actions/python-toolchain) | sets up `uv` at the governed version — the only place that pin lives |
 | [`resolve-canary`](.github/actions/resolve-canary) | proves cross-repository action resolution still works — see its README |

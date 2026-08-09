@@ -1,0 +1,114 @@
+name: 'Private-content firewall — denylist falsifier'
+description: 'Prove every rule in the caller''s denylist still bites, and that benign lookalikes still do not.'
+author: 'arqtiqa/arqtos-actions'
+
+# ⚠️ THIS ACTION SHIPS NO DENYLIST AND NO PROBE CORPUS, AND THAT IS THE POINT.
+#
+# The sibling `firewall` action ships no denylist because a denylist is a list
+# of the things it protects, and centralising it into this PUBLIC repository
+# would force the union of every caller's list — and the union is the
+# disclosure. THE LOGIC IS SHARED, THE DATA IS NOT.
+#
+# A probe corpus is derived data: a string engineered to match a rule is a
+# description of that rule. It inherits the same rule, so it lives with the
+# caller too. It could not usefully be centralised anyway — the central
+# assertion here is that the corpus exercises EVERY rule of THIS caller's
+# list, and callers' lists legitimately differ (a repo readable outside the
+# organisation must not carry identity patterns; an internal one should).
+# One shared corpus would be wrong for every caller but one.
+#
+# ⚠️ AND A MISSING CORPUS IS A MISCONFIGURATION, NEVER "NOTHING TO CHECK".
+# The script exits 2, because "no falsifier ran" is precisely the state
+# arqtiqa/arqtos#361 exists to end, and a skipped check renders as a green
+# check exactly like a passing one.
+
+inputs:
+  denylist:
+    description: >-
+      Path to the caller's denylist — the SAME path the caller passes to the
+      `firewall` action. REQUIRED; there is no default and no bundled
+      fallback. An absent or unreadable file exits 2.
+
+      ⚠️ Point this at the same list the gate actually runs. A falsifier
+      proving a DIFFERENT list alive is the most convincing possible form of
+      no coverage.
+    required: true
+  probes:
+    description: >-
+      Path to the caller's synthetic probe corpus. Defaults to
+      `.firewall-probes` at the repository root, which is the convention —
+      it sits next to `.firewallignore`, and the pair reads as a unit:
+      `.firewallignore` says "this looks like a violation and is allowed",
+      `.firewall-probes` says "this must be a violation".
+
+      Format (see this action's README): free-form `#` comments and blank
+      lines, a `[must-match]` section of synthetic probes each of which must
+      fire at least one rule, and a `[must-not-match]` section of benign
+      lookalikes none of which may fire anything. Both sections are mandatory
+      and both must be non-empty.
+
+      ⚠️ PROBES ARE SYNTHETIC. A probe is shaped LIKE what a rule catches and
+      is never an instance of it — never a real credential, never a real
+      identity value, never a real host. This file is committed, and several
+      repositories carrying one are public.
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Prove every denylist rule still bites
+      shell: bash
+      env:
+        INPUT_DENYLIST: ${{ inputs.denylist }}
+        INPUT_PROBES: ${{ inputs.probes }}
+      run: |
+        set -euo pipefail
+
+        # Locate both scripts relative to THIS action, not the caller's cwd.
+        #
+        # ⚠️ The scanner is resolved from `github.action_path`'s SIBLING
+        # directory ON PURPOSE: GitHub checks out this whole repository at the
+        # SHA the caller pinned, so the falsifier drives the EXACT scanner
+        # build the caller's gate runs. A falsifier that reimplemented matching
+        # would only ever prove its own engine agrees with itself, and a
+        # falsifier resolving the scanner from anywhere else could prove a
+        # different build alive than the one guarding the repository.
+        script="${{ github.action_path }}/check-denylist-liveness.sh"
+        scanner="${{ github.action_path }}/../firewall/check-private-content.sh"
+        if [[ ! -x "$script" ]]; then
+          echo "✗ firewall-falsifier: $script is missing or not executable" >&2
+          exit 2
+        fi
+        if [[ ! -x "$scanner" ]]; then
+          echo "✗ firewall-falsifier: $scanner is missing or not executable" >&2
+          exit 2
+        fi
+
+        # ⚠️ Checked here as well as in the script. GitHub does NOT enforce
+        # `required: true` for composite-action inputs, so the declaration
+        # above is documentation, not a guarantee.
+        if [[ -z "$INPUT_DENYLIST" ]]; then
+          echo "✗ firewall-falsifier: no denylist supplied." >&2
+          echo "  Pass the SAME path the firewall action scans with; proving a" >&2
+          echo "  different list alive is not coverage of this one." >&2
+          exit 2
+        fi
+
+        # Only pass --probes through when the caller actually set one, so an
+        # empty input falls to the SCRIPT's own default (.firewall-probes)
+        # rather than to a literal empty path.
+        #
+        # ⚠️ NOUNSET-SAFE EXPANSION IS REQUIRED, NOT DECORATIVE: bash 3.2
+        # throws "unbound variable" on a plain "${arr[@]}" when arr is empty
+        # under `set -u`.
+        probes_arg=()
+        if [[ -n "$INPUT_PROBES" ]]; then
+          probes_arg=("--probes=$INPUT_PROBES")
+        fi
+
+        # ⚠️ EQUALS-SIGN FLAG FORM. A space-separated `--denylist <path>` is a
+        # different, silently-wrong invocation; the script refuses unknown
+        # arguments rather than guessing, but the call site should be right in
+        # the first place.
+        "$script" "--denylist=$INPUT_DENYLIST" "--scanner=$scanner" "${probes_arg[@]+"${probes_arg[@]}"}"
