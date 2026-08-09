@@ -155,15 +155,31 @@ fi
 # (the literal text inside the regexes), which would create a recursive
 # false positive every commit that touched the denylist. We skip on TWO
 # conditions:
-#   1. realpath match — same physical file as the configured denylist
-#   2. basename match — a vendored copy elsewhere in the tree has a
-#      different realpath but the same shape, so it would still trip the
-#      self-match.
+#   1. realpath match — same physical file as the configured denylist.
+#      Unconditional: this IS the denylist, so it always self-matches.
+#   2. basename match CORROBORATED BY CONTENT — a vendored copy elsewhere in
+#      the tree has a different realpath but the same shape, so it would
+#      still trip the self-match.
 #
-# The exemptions file is skipped the same way (realpath only — there is no
-# "vendored copy" precedent for it the way there is for the denylist): its
-# own <rule> column is literal denylist-pattern text, so without this it
-# would self-match the very rule it names.
+# ⚠️ arqtiqa/arqtos#343: condition 2 used to fire on the basename ALONE, which
+# excludes any unrelated tracked file that merely happens to share the
+# denylist's filename — proven live by arqtos-cli's own
+# `internal/firewall/testdata/golden/work.txt`, a golden-corpus fixture with
+# no relation to `internal/firewall/denylists/work.txt` beyond the name,
+# dropped from the scan entirely and unreviewed. Worse, this skip happens
+# HERE, while the file list is built, before exemptions are resolved below —
+# so `.firewallignore` (arqtos#341) never gets a chance to record a reviewed
+# decision about it either. A same-basename file is now ALSO required to be
+# byte-identical to the denylist's own content before it is treated as a
+# vendored copy: that is what "vendored" actually means (a copy), and it is
+# corroboration a name coincidence cannot supply. An unrelated file that
+# merely shares a name is scanned like any other file, and only a genuine
+# content-identical copy is skipped — loudly, on stderr, naming the file.
+#
+# The exemptions file is skipped by realpath only — there is no "vendored
+# copy" precedent for it the way there is for the denylist: its own <rule>
+# column is literal denylist-pattern text, so without this it would
+# self-match the very rule it names.
 denylist_real=$(cd "$(dirname "$denylist")" && pwd -P)/$(basename "$denylist")
 denylist_base=$(basename "$denylist")
 exemptions_real=""
@@ -177,8 +193,8 @@ for f in "${files[@]+"${files[@]}"}"; do
   if [[ "$f_real" == "$denylist_real" ]]; then
     continue
   fi
-  if [[ "$(basename "$f")" == "$denylist_base" ]]; then
-    echo "info: skipping vendored denylist $f" >&2
+  if [[ "$(basename "$f")" == "$denylist_base" ]] && cmp -s -- "$f" "$denylist"; then
+    echo "info: skipping vendored denylist $f (same name AND byte-identical content to $denylist)" >&2
     continue
   fi
   if [[ -n "$exemptions_real" && "$f_real" == "$exemptions_real" ]]; then
