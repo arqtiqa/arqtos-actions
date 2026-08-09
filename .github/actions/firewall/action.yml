@@ -81,24 +81,27 @@ inputs:
       Opt-in (arqtiqa/arqtos#344): set to 'true' to make identity-tier
       coverage a REQUIREMENT rather than the best-effort default `#342`
       established. Default 'false' -- every existing caller of this action is
-      unaffected unless it sets this explicitly.
+      unaffected unless it sets this explicitly. Only the literal strings
+      'true' and 'false' are accepted; a security opt-in must not silently
+      no-op on a typo ('TRUE', 'yes', '1', ...) -- any other value is a
+      configuration error (exit 2), never treated as 'false'.
 
       THE DIFFICULTY THIS INPUT IS DESIGNED AROUND: the repositories that
       most need required identity coverage are exactly the repositories
       where GitHub withholds the identity-overlay secret -- a pull request
-      from a fork, or a Dependabot-triggered run (its own separate secret
-      store). Setting this to 'true' does NOT turn those runs red. This
-      action detects that context itself (which pull requests are from a
-      fork, and Dependabot's actor identity are both ordinary, ambient
-      workflow-run facts, never something a caller's `with:` block supplies)
-      and, in that case, reports that identity coverage could not be
-      verified this run -- credential-tier only, stated in a way distinct
-      from both a clean run that had the overlay and a genuine failure. What
-      DOES fail (exit 2) is the case this input exists to catch: the same
-      repository, in a context where the secret is expected to be
-      available, running without it -- never wired, a secret renamed or
-      rotated out from under the workflow, or a repository whose secret
-      visibility never covered it.
+      whose head repository differs from this one, or a Dependabot-triggered
+      run (its own separate secret store). Setting this to 'true' does NOT
+      turn those runs red. This action detects that context itself (whether
+      a pull request's head repository is this SAME repository, and
+      Dependabot's actor identity, are both ordinary, ambient workflow-run
+      facts, never something a caller's `with:` block supplies) and, in that
+      case, reports that identity coverage could not be verified this run --
+      credential-tier only, stated in a way distinct from both a clean run
+      that had the overlay and a genuine failure. What DOES fail (exit 2) is
+      the case this input exists to catch: the same repository, in a context
+      where the secret is expected to be available, running without it --
+      never wired, a secret renamed or rotated out from under the workflow,
+      or a repository whose secret visibility never covered it.
 
       A repository adopting this input still needs the merge-time backstop
       the fork/Dependabot exemption depends on -- an unconditional
@@ -144,10 +147,30 @@ runs:
         # `pull_request` trigger (the base branch's copy is), and
         # `github.actor` is set by the platform, not by workflow YAML -- so a
         # caller cannot spoof this to talk its way out of the requirement.
-        # `github.event.pull_request.head.repo.fork` is null (falsy) on any
-        # non-pull_request trigger, so this evaluates safely on every event
-        # type this action ever runs under.
-        ARQTOS_FIREWALL_OVERLAY_MAY_BE_WITHHELD: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork == true) || github.actor == 'dependabot[bot]' }}
+        #
+        # ⚠️ arqtiqa/arqtos#344 round-1 review: `head.repo.fork` IS THE WRONG
+        # QUESTION -- it means "the head repo is a fork OF ANYTHING", not "the
+        # head repo differs from THIS run's base repo". A consuming repository
+        # that is ITSELF a fork (of some upstream) would get the
+        # withheld-exemption on EVERY same-repo pull request, where the
+        # secret is in fact available -- silently converting the exit-2
+        # "never wired" case into a green, unverified run on every PR that
+        # repo has. Compare `head.repo.full_name` against `github.repository`
+        # instead: that is "same repo or not", which is the actual question,
+        # regardless of whether either side happens to be a fork of something
+        # else. (0 of this action's current consumers are themselves forks,
+        # so this was latent, not live -- but one `gh repo fork` away from
+        # being live, and it would have failed silently and greenly.)
+        #
+        # `&&`/`||` short-circuit in GitHub Actions expressions, so on any
+        # non-`pull_request` event (`push`, `pull_request_target`,
+        # `workflow_run`, `merge_group`, ...) the left operand is false and
+        # `github.event.pull_request.head.repo.full_name` is never evaluated
+        # at all -- no null-vs-string comparison surprises, and the overall
+        # expression always renders a literal `true` or `false` (`github.actor`
+        # is populated on every event type), never empty, so nothing here
+        # ever falls through to an inherited value.
+        ARQTOS_FIREWALL_OVERLAY_MAY_BE_WITHHELD: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) || github.actor == 'dependabot[bot]' }}
       run: |
         set -euo pipefail
 

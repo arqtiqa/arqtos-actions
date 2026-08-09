@@ -53,6 +53,26 @@ The matrix, each state proven both to occur AND to say what it is:
      guard against bash 3.2's `set -u` -- verified directly under
      `/bin/bash` for both new exit paths anyway, because this file has hit
      this exact class of regression twice before.
+
+Round-1 review (same Story) found two more, both fixed here and pinned below:
+
+  7. `require-identity-overlay` is a CALLER-supplied input (unlike
+     `ARQTOS_FIREWALL_OVERLAY_MAY_BE_WITHHELD`, which action.yml computes
+     and always renders a literal 'true'/'false'), so a typo is a real
+     hazard: 'TRUE', 'yes', '1' all used to silently no-op the requirement
+     -- exactly the silent-degradation class this Story exists to close,
+     reappearing in its own argument parser. Now refused (exit 2) rather
+     than quietly treated as 'false'.
+  8. `action.yml`'s fork/Dependabot predicate used
+     `github.event.pull_request.head.repo.fork`, which means "the head repo
+     is a fork OF ANYTHING" -- not "the head repo differs from this run's
+     OWN repo". A consuming repository that is itself a fork would have
+     gotten the withheld-exemption on every same-repo pull request, where
+     the secret is in fact available. Fixed to compare
+     `head.repo.full_name != github.repository` instead. This lives in
+     `action.yml`, so it cannot be pytest-exercised directly (same
+     limitation as point 5's context expression above) -- verified by a
+     live Actions run instead (see the Story's report).
 """
 
 from __future__ import annotations
@@ -186,11 +206,25 @@ def test_require_true_with_a_zero_pattern_overlay_is_still_MISCONFIGURED(tmp_pat
     supplied but resolves to zero usable pattern lines is a
     misconfiguration regardless of `require-identity-overlay`. Pinned here
     as a regression guard specific to this Story's new code paths, which
-    sit right next to this check and could easily have shadowed it."""
+    sit right next to this check and could easily have shadowed it.
+
+    ⚠️ arqtiqa/arqtos#344 round-1 review, MINOR: a return-code-only assertion
+    cannot tell `#342`'s zero-pattern exit 2 apart from THIS Story's own
+    required-and-absent exit 2 -- both are the literal integer 2. Deleting
+    `#342`'s guard entirely still leaves this test green, because the new
+    require block below it produces the same code for a different reason
+    (an overlay resolving to zero rules, at this point in the script, means
+    the overlay was PRESENT-but-empty, which the require block never
+    special-cases -- it only branches on absence). Asserting on `#342`'s
+    own message text is what actually proves ITS guard fired, not a
+    same-numbered coincidence from this Story's."""
     r = clean_repo(tmp_path)
     p = run(r, "--denylist=dl.txt", "--all-tracked",
             overlay="# only a comment\n", require="true")
-    assert p.returncode == MISCONFIGURED, f"stderr:\n{p.stderr.decode()}"
+    err = p.stderr.decode()
+    assert p.returncode == MISCONFIGURED, f"stderr:\n{err}"
+    assert "was supplied but contains no rules" in err, (
+        f"expected #342's own zero-pattern message, got:\n{err}")
 
 
 # --- #4: require=true, overlay absent, secret COULD exist -- MISCONFIGURED
@@ -373,4 +407,57 @@ def test_require_false_path_with_both_new_env_vars_unset_is_nounset_safe_under_b
     r = clean_repo(tmp_path)
     p = run(r, "--denylist=dl.txt", "--all-tracked", bash="/bin/bash")
     assert p.returncode == CLEAN
+
+
+# --- #7: strict value parsing (round-1 review, SHOULD-FIX) -----------------
+#
+# ⚠️ `require-identity-overlay` is a CALLER-supplied input -- unlike
+# `ARQTOS_FIREWALL_OVERLAY_MAY_BE_WITHHELD`, which action.yml computes and
+# always renders a literal 'true'/'false', a human can and does typo a YAML
+# value. Before this fix, anything other than the exact string 'true' was
+# silently treated as 'false' -- so a caller who wrote 'TRUE', 'yes', or `1`
+# believing they had required identity coverage instead got an ordinary,
+# unrequired, credential-tier-only run with no indication anything was
+# wrong. That is the exact silent-degradation class this whole Story exists
+# to close, reappearing in its own argument parser.
+
+@pytest.mark.parametrize("bad_value", ["TRUE", "True", "yes", "1", "on", " true", "true "])
+def test_an_unrecognized_require_value_is_MISCONFIGURED(tmp_path, bad_value):
+    r = clean_repo(tmp_path)
+    p = run(r, "--denylist=dl.txt", "--all-tracked", overlay=None, require=bad_value)
+    err = p.stderr.decode()
+    assert p.returncode == MISCONFIGURED, (
+        f"require-identity-overlay={bad_value!r} must be refused, never "
+        f"silently treated as 'false'; got {p.returncode}\nstderr:\n{err}")
+
+
+def test_an_unrecognized_require_value_names_the_bad_value_and_the_input(tmp_path):
+    r = clean_repo(tmp_path)
+    err = run(r, "--denylist=dl.txt", "--all-tracked", overlay=None,
+              require="TRUE").stderr.decode()
+    assert "require-identity-overlay" in err, f"got:\n{err}"
+    assert "'true' or 'false'" in err, f"got:\n{err}"
+    assert "TRUE" in err, f"the bad value itself should be echoed back:\n{err}"
+
+
+def test_require_true_lowercase_still_arms_the_requirement(tmp_path):
+    """Control: the fix must refuse GARBAGE, not narrow what already worked.
+    The exact string 'true' must keep arming the requirement exactly as
+    before -- this is the same scenario as
+    `test_require_true_overlay_absent_ordinary_context_is_MISCONFIGURED`,
+    repeated here as a direct sibling of the new parametrized refusal test
+    so the pass/refuse boundary is visible in one place."""
+    r = clean_repo(tmp_path)
+    p = run(r, "--denylist=dl.txt", "--all-tracked", overlay=None,
+            require="true", may_be_withheld="false")
+    assert p.returncode == MISCONFIGURED
+    assert "require-identity-overlay" in p.stderr.decode()
+
+
+def test_require_false_lowercase_still_a_no_op(tmp_path):
+    """Control: the exact string 'false' (action.yml's own default value)
+    must keep behaving as a no-op, not be swept up by the new refusal."""
+    r = clean_repo(tmp_path)
+    p = run(r, "--denylist=dl.txt", "--all-tracked", overlay=None, require="false")
+    assert p.returncode == CLEAN, f"stderr:\n{p.stderr.decode()}"
     assert "unbound variable" not in p.stderr.decode()

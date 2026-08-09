@@ -32,7 +32,10 @@
 # the full "why", and this action's action.yml for how the fork/Dependabot
 # context is derived (ARQTOS_FIREWALL_OVERLAY_MAY_BE_WITHHELD) -- never a
 # caller-supplied input, so a caller cannot set its way out of the
-# requirement.
+# requirement. Only the exact strings "true" and "false" (or unset/empty,
+# treated as "false") are accepted -- this is a security opt-in, so any
+# other value (a typo like "TRUE", "yes", "1") is a configuration error
+# (exit 2) rather than a silent no-op.
 #
 # --exemptions=<path> (optional) names a committed path+rule escape hatch
 # (arqtiqa/arqtos-cli#851) for content that is DELIBERATELY supposed to look
@@ -275,18 +278,51 @@ fi
 #
 # ⚠️ WHICH CONTEXT THE SECRET COULD EXIST IN IS NOT A CALLER-SUPPLIED INPUT,
 # ON PURPOSE. It is derived entirely from ambient `github.*` context in
-# action.yml (the actor, and whether a pull request's head repository is a
-# fork) and handed down as ARQTOS_FIREWALL_OVERLAY_MAY_BE_WITHHELD -- a caller
-# cannot set this via `with:` to talk its way out of the requirement, because
-# a fork PR's own workflow definition is never the one that runs (GitHub
-# always runs the BASE branch's workflow file for a `pull_request` trigger),
-# and `github.actor` is set by the platform, not the caller's YAML.
+# action.yml (the actor, and whether a pull request's head repository
+# DIFFERS FROM this run's own repository -- NOT merely "is a fork of
+# something", which round-1 review found would wrongly exempt every
+# same-repo PR on a consuming repository that is itself a fork of some
+# upstream) and handed down as ARQTOS_FIREWALL_OVERLAY_MAY_BE_WITHHELD -- a
+# caller cannot set this via `with:` to talk its way out of the
+# requirement, because a fork PR's own workflow definition is never the one
+# that runs (GitHub always runs the BASE branch's workflow file for a
+# `pull_request` trigger), and `github.actor` is set by the platform, not
+# the caller's YAML.
+#
+# ⚠️ arqtiqa/arqtos#344 round-1 review, SHOULD-FIX: require_overlay_raw is a
+# CALLER-SUPPLIED input (unlike overlay_may_be_withheld_raw below, which
+# action.yml computes and always renders a literal 'true'/'false'), so a
+# typo here is a real hazard -- 'TRUE', 'yes', '1' would all silently
+# no-op a caller's security opt-in, turning an intended requirement into an
+# unnoticed credential-tier-only run. That is exactly the silent-degradation
+# class this Story exists to close, so it is refused (exit 2), never
+# quietly treated as 'false' -- the same "fail closed on an unrecognised
+# value" discipline the rest of this file already applies to a denylist
+# rule grep cannot compile.
 require_overlay_raw="${ARQTOS_FIREWALL_REQUIRE_IDENTITY_OVERLAY:-}"
 require_overlay=0
-if [[ "$require_overlay_raw" == "true" ]]; then
-  require_overlay=1
-fi
+case "$require_overlay_raw" in
+  "" | "false")
+    ;;
+  "true")
+    require_overlay=1
+    ;;
+  *)
+    echo "✗ check-private-content: require-identity-overlay must be the literal string 'true' or 'false' (got '$require_overlay_raw')." >&2
+    echo "  This input is a security opt-in -- silently treating an unrecognised value" >&2
+    echo "  as 'false' would let a typo turn a caller's intended requirement into an" >&2
+    echo "  unnoticed credential-tier-only run. Use exactly 'true' or 'false'." >&2
+    exit 2
+    ;;
+esac
 
+# overlay_may_be_withheld_raw is NOT caller-supplied (action.yml computes it
+# from ambient github.* context and always renders a literal 'true' or
+# 'false' -- see action.yml's own comment on ARQTOS_FIREWALL_OVERLAY_MAY_BE_WITHHELD
+# for why it can never be anything else), so there is no equivalent typo
+# surface here to fail closed on; the strict equality check below already
+# matches require_overlay_raw's own strictness -- only the exact string
+# 'true' counts as true.
 overlay_may_be_withheld_raw="${ARQTOS_FIREWALL_OVERLAY_MAY_BE_WITHHELD:-}"
 overlay_may_be_withheld=0
 if [[ "$overlay_may_be_withheld_raw" == "true" ]]; then

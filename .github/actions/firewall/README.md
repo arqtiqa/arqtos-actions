@@ -56,6 +56,44 @@ The check is duplicated deliberately — in this action *and* in the script — 
 | `denylist` | **yes** | no default, no bundled fallback; absent or unreadable → `2` |
 | `files` | no | space/newline-separated; defaults to `git ls-files` |
 | `exemptions` | no | path+rule exemptions file; empty defaults to `.firewallignore` at the repo root if present — see "Exemptions" below |
+| `identity-overlay` | no | identity-tier pattern **text** (not a path) for the org secret `ARQTOS_FIREWALL_IDENTITY_OVERLAY` (`#342`) — see "The identity-tier overlay" below |
+| `require-identity-overlay` | no | `'true'` to make identity coverage a requirement rather than best-effort (`#344`) — see "Requiring identity coverage" below |
+
+## The identity-tier overlay
+
+The firewall has two tiers. **Credential** patterns ship in the caller's committed `denylist`. **Identity** patterns — a login, a hostname scheme, a customer name — are deliberately committed nowhere, because embedding them would compile confidential regex text into a world-readable release asset regardless of which tier a caller selected. They are distributed instead as the org secret `ARQTOS_FIREWALL_IDENTITY_OVERLAY` and supplied at runtime:
+
+```yaml
+    identity-overlay: ${{ secrets.ARQTOS_FIREWALL_IDENTITY_OVERLAY }}
+```
+
+Absent (unset, or the secret unavailable — a Dependabot-triggered run, which GitHub never grants org secrets to) is a legitimate, **stated**, credential-tier-only run; it never fails just because the overlay is missing. A value that **is** supplied but resolves to zero usable pattern lines (all-comment, all-whitespace, a truncated secret) is a configuration error (`2`), never a pass — the same rule the denylist's own empty-file guard follows. The overlay's own pattern text is never printed in the report, on any path.
+
+## Requiring identity coverage
+
+`identity-overlay` alone cannot tell a caller "unwired" apart from "wired to an empty secret, a rotated secret, or a secret this repository's visibility never covered" — all of them just look like the ordinary credential-tier-only default, indefinitely. `require-identity-overlay: 'true'` closes that gap **for the repositories where the secret can actually be present**:
+
+```yaml
+on:
+  pull_request:
+  push:
+    branches: [main]   # ⚠️ the backstop below depends on this trigger existing
+
+jobs:
+  firewall:
+    steps:
+      - uses: arqtiqa/arqtos-actions/.github/actions/firewall@<40-char-sha>  # v1
+        with:
+          denylist: .github/scripts/private-content-denylist.txt
+          identity-overlay: ${{ secrets.ARQTOS_FIREWALL_IDENTITY_OVERLAY }}
+          require-identity-overlay: 'true'
+```
+
+⚠️ **Only the literal strings `'true'` and `'false'` are accepted.** This is a security opt-in, so a typo (`'TRUE'`, `'yes'`, `'1'`) is refused (`2`) rather than silently treated as `'false'` — the same silent-degradation class this input exists to close would otherwise reappear in its own argument parser.
+
+⚠️ **The repositories that most need this are exactly the repositories where GitHub withholds the secret** — a pull request whose head repository differs from this one, or a Dependabot-triggered run (its own separate secret store). Setting `require-identity-overlay: 'true'` does **not** turn those runs red: the action detects that context itself from ambient `github.*` facts (never something a caller's `with:` block supplies) and reports that identity coverage could not be verified **this run** — credential-tier only, stated distinctly from both a clean run that had the overlay and a genuine failure. What **does** fail (`2`) is the case this input exists to catch: the same repository, in a context where the secret is expected to be available, running without it.
+
+⚠️ **A repository adopting this input still needs the `push: branches: [main]` trigger shown above.** It is the merge-time backstop the fork/Dependabot exemption depends on: the run that lands on `main` once such a PR merges executes with the real secret and is what actually verifies coverage for that change — the same pattern `arqtos-skills`' `estate-identifiers` job already uses (skip on Dependabot, recover via the push-triggered run). Setting `require-identity-overlay: 'true'` states the intent; it does not by itself supply that backstop run. Without the trigger, an external contribution's identity coverage is stated as unverified and then never actually checked by anything, ever.
 
 ## Exemptions
 
