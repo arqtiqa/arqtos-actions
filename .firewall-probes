@@ -1,0 +1,122 @@
+# Synthetic probe corpus for the private-content firewall (arqtiqa/arqtos#361).
+#
+# WHAT THIS IS. One synthetic probe per active rule in
+# `.github/scripts/private-content-denylist.txt`, plus benign lookalikes that
+# must NOT fire. `.github/actions/firewall-falsifier` asserts, on every PR:
+#
+#   * every active rule fires on at least one [must-match] probe
+#     -> a rule edited into a compiling-but-non-matching form, or added with
+#        nothing behind it, turns the build RED
+#   * every [must-match] probe fires at least one rule
+#     -> a DELETED rule turns the build RED, via its orphaned probe. Counting
+#        violations cannot see this: delete a rule and both sides drop by one.
+#   * no [must-not-match] lookalike fires anything
+#     -> a rule widened until it matches ordinary content turns the build RED
+#
+# WHY IT EXISTS. Before this, this repository's denylist rested on a one-time
+# manual dry-run performed when the gate was enabled. Every way a denylist
+# decays leaves the gate GREEN, and a green firewall over a dead denylist is
+# worse than no firewall, because it is trusted.
+#
+# ⚠️ EVERY STRING BELOW IS SYNTHETIC. A probe is shaped LIKE what a rule
+# catches and is never an instance of it: no real credential, no real identity
+# value, no real host. This repository is PUBLIC and this file is committed.
+#
+# ⚠️ THIS FILE FIRES THE REAL GATE ON ITSELF, BY CONSTRUCTION, AND THAT IS
+# HANDLED IN THE OPEN. It is a file full of denylist-shaped strings, so the
+# firewall matches it. It is exempted by one reviewed `.firewallignore` entry
+# per rule, each naming this exact path and that one rule, each with its
+# mandatory reason. It is deliberately NOT excluded from the scan inside the
+# tooling: a silent exclusion is the defect class arqtiqa/arqtos#343 was filed
+# for, where a file was dropped from the scan before `.firewallignore` could
+# even record a decision about it. Those entries are fail-closed -- edit or
+# delete a rule and its entry goes stale, which is exit 2, not a silent no-op.
+#
+# ⚠️ KEEP THIS FILE IN STEP WITH THE DENYLIST, IN THE SAME COMMIT. Adding a
+# rule without a probe is red. Removing a rule without removing its probe is
+# red. That coupling is the mechanism, not an inconvenience.
+#
+# A probe is the WHOLE LINE; there are no fields. A probe therefore cannot
+# begin with `#` or `[`, and each one is described by the comment above it.
+
+[must-match]
+
+# private-network address range
+192.168.0.0
+
+# GitHub personal access token (classic prefix)
+ghp_ZZZSYNTHETICFIREWALLPROBE00000000000
+
+# GitHub OAuth token
+gho_ZZZSYNTHETICFIREWALLPROBE00000000000
+
+# GitHub fine-grained personal access token
+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
+
+# Linear API key
+# ⚠️ PREFIXED WITH `ZZZSYNTHETIC`, UNLIKE ITS NEIGHBOURS, AND THE PREFIX IS
+# LOAD-BEARING. GitHub's own PUSH PROTECTION scans this file like any other and
+# refused the first push of this corpus, flagging this one line. Its detectors
+# for the GitHub and AWS shapes above carry a checksum that an obviously-fake
+# body fails, so those pass; the Linear shape is prefix-plus-length alone, so a
+# synthetic body satisfies it exactly.
+#
+# ⚠️ THE FIX IS THE PREFIX, NEVER THE "ALLOW THIS SECRET" LINK. Clicking that
+# link whitelists the string estate-wide and teaches a reviewer that push
+# protection is something you click past -- which is the same "a permanently
+# red gate gets disabled rather than obeyed" failure the exemptions mechanism
+# exists to avoid, on a control nobody here owns.
+#
+# The rule this probe exercises has no leading word boundary, so an embedded
+# occurrence is a genuine match for it; the third-party detector wants the
+# prefix to start a token, and here it does not. If the rule is ever narrowed
+# with a `\b`, this probe stops firing and the build goes red -- which is
+# correct: a narrowed rule must be re-proven, not assumed.
+ZZZSYNTHETIClin_api_ZZZSYNTHETICFIREWALLPROBE000000000000000
+
+# 1Password secret reference
+op://zzz-synthetic-vault/zzz-synthetic-item
+
+# GitHub user-to-server token
+ghu_ZZZSYNTHETICFIREWALLPROBE00000000000
+
+# GitHub server-to-server token
+ghs_ZZZSYNTHETICFIREWALLPROBE00000000000
+
+# GitHub refresh token
+ghr_ZZZSYNTHETICFIREWALLPROBE00000000000
+
+# AWS access key id
+AKIAZZZZSYNTHETICPRB
+
+# PEM private-key block header
+# ⚠️ Begins with hyphens. `grep` parses a leading-hyphen pattern as an OPTION
+# unless `-e` is used -- the live defect arqtos-cli#1069 filed, where the
+# highest-severity rule in the list was silently never applied in CI while the
+# check stayed green. This probe is the standing proof that it is applied.
+-----BEGIN ZZZ SYNTHETIC PROBE PRIVATE KEY-----
+
+[must-not-match]
+
+# an ordinary sentence, no credential shape anywhere in it
+the quick brown fox jumps over the lazy dog
+
+# a dotted quad that stops one octet short of the private-range rule
+192.168.0
+
+# just OUTSIDE the private 172.16-172.31 block -- pins the range boundary, so
+# widening the rule to swallow the whole 172/8 space turns the build red
+172.15.10.1
+
+# GitHub token prefix with a body far too short to be a token
+ghp_ZZZSYNTHETICTOOSHORT
+
+# AWS key prefix with a body too short to be a key id
+AKIAZZZSHORT
+
+# a secret-reference scheme with a vault but no item -- an incomplete
+# reference is not a reference
+op://zzz-synthetic-vault
+
+# a PEM block header for PUBLIC key material, which is not a secret
+-----BEGIN ZZZ SYNTHETIC PROBE PUBLIC KEY-----

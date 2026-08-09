@@ -1,0 +1,37 @@
+# Firewall exemptions (arqtiqa/arqtos-cli#851 format) -- a committed, reviewed
+# escape hatch for content that is DELIBERATELY supposed to look like a
+# violation.
+#
+# ⚠️ EVERY ENTRY HERE EXISTS FOR ONE FILE: `.firewall-probes`, the synthetic
+# probe corpus arqtiqa/arqtos#361 introduced. That file is a list of strings
+# engineered to match this repository's denylist, so the firewall matches it
+# BY CONSTRUCTION -- that is the file's entire purpose, and the reason the
+# falsifier can prove every rule still bites.
+#
+# ⚠️ WHY THIS IS THE RIGHT PLACE TO HANDLE IT. The alternative -- teaching the
+# scanner or the falsifier to skip the corpus -- is a SILENT exclusion, which
+# is the defect class arqtiqa/arqtos#343 was filed for: a file dropped from the
+# scan before `.firewallignore` ever got a chance to record a decision about
+# it. Here the decision is visible in the diff, scoped to one path and one
+# rule per line, with a mandatory reason, and FAIL-CLOSED: edit or delete a
+# rule and its entry below matches no active pattern, which is exit 2.
+#
+# ⚠️ ONE ENTRY PER RULE, NEVER A PATH EXEMPTED FROM EVERYTHING. Exempting the
+# corpus from rule A must leave rule B live on it, and must leave rule A live
+# on every other file. There is no "skip this file" form and there must not be.
+#
+# ⚠️ DO NOT WIDEN A PATH GLOB HERE. Each glob below is a literal path with no
+# wildcard. The falsifier scans its probes with exemptions OUT of force, so it
+# cannot see an exemption that widened to swallow real content -- that is held
+# by review and by this mechanism's own fail-closed validation.
+.firewall-probes	\b(192\.168\.|10\.0\.|10\.1\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)[0-9]{1,3}\.[0-9]{1,3}\b	arqtos#361: synthetic falsifier probe for this rule -- must match, by construction
+.firewall-probes	ghp_[A-Za-z0-9]{36,}	arqtos#361: synthetic falsifier probe for this rule -- must match, by construction
+.firewall-probes	gho_[A-Za-z0-9]{36,}	arqtos#361: synthetic falsifier probe for this rule -- must match, by construction
+.firewall-probes	github_pat_[A-Za-z0-9_]{82,}	arqtos#361: synthetic falsifier probe for this rule -- must match, by construction
+.firewall-probes	lin_api_[A-Za-z0-9]{40,}	arqtos#361: synthetic falsifier probe for this rule -- must match, by construction
+.firewall-probes	op://[A-Za-z0-9_-]+/[A-Za-z0-9_-]+	arqtos#361: synthetic falsifier probe for this rule -- must match, by construction
+.firewall-probes	ghu_[A-Za-z0-9]{36,}	arqtos#361: synthetic falsifier probe for this rule -- must match, by construction
+.firewall-probes	ghs_[A-Za-z0-9]{36,}	arqtos#361: synthetic falsifier probe for this rule -- must match, by construction
+.firewall-probes	ghr_[A-Za-z0-9]{36,}	arqtos#361: synthetic falsifier probe for this rule -- must match, by construction
+.firewall-probes	\bAKIA[0-9A-Z]{16}\b	arqtos#361: synthetic falsifier probe for this rule -- must match, by construction
+.firewall-probes	-----BEGIN [A-Z ]*PRIVATE KEY-----	arqtos#361: synthetic falsifier probe for this rule -- must match, by construction

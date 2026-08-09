@@ -56,3 +56,34 @@ jobs:
           # It is NOT the action's default; the file's header says so too,
           # because this is the one repo where that mistake is possible.
           denylist: .github/scripts/private-content-denylist.txt
+
+      # ⚠️ THE GATE ABOVE BEING GREEN IS NOT EVIDENCE THE DENYLIST STILL BITES
+      # (arqtiqa/arqtos#361).
+      #
+      # A denylist decays silently, and every decay mode leaves the gate green:
+      # a rule edited into a form that still COMPILES but matches nothing
+      # (arqtos-cli#1092 was exactly that, one level down — the shared script
+      # reported CLEAN when `grep` REJECTED a pattern), a rule deleted during an
+      # unrelated edit, a rule added with nothing behind it. A green firewall
+      # over a dead denylist is worse than no firewall, because it is trusted.
+      #
+      # Until now this repository's list rested on a one-time manual dry-run
+      # performed when the gate was enabled — evidence it bit ONCE, on one day,
+      # against one tree.
+      - name: Prove every denylist rule still bites
+        # ⚠️ RELATIVE, and only because this is THIS repository. A workflow may
+        # compose by relative path (a composite action may not — there it would
+        # resolve against the consumer), and here it is deliberate: consumers
+        # pin a SHA, but the repository that SHIPS the falsifier must test the
+        # falsifier it is about to ship, not the one it last released.
+        #
+        # ⚠️ That distinction is not theoretical here. This repo's own firewall
+        # pin sat two mechanisms behind its own `main` (arqtiqa/arqtos#346), so
+        # the repository shipping the exemptions mechanism had never exercised
+        # it against itself — which is how #348 shipped a change that made the
+        # action unloadable for every consumer.
+        uses: ./.github/actions/firewall-falsifier
+        with:
+          # ⚠️ THE SAME list the gate above scans. Proving a different list
+          # alive is the most convincing possible form of no coverage.
+          denylist: .github/scripts/private-content-denylist.txt
