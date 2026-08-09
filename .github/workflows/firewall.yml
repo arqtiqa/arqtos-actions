@@ -31,7 +31,22 @@ jobs:
         # is a GATE. A compromised gate does not break the build — it returns a
         # GREEN CHECK on a repo whose scan is no longer running. Bump
         # deliberately, reading the diff.
-        uses: arqtiqa/arqtos-actions/.github/actions/firewall@e294a60d6ccc7e579d61d5bb5a6ea97f41785e2d  # v1
+        #
+        # ⚠️ THIS IS THIS REPO'S OWN PIN OF ITS OWN ACTION (arqtos#346). It sat at
+        # e294a60 while this repo's `main` moved on, so the repo that SHIPS the
+        # exemptions mechanism had never exercised it against itself. Bumped to
+        # b27c7456 (this repo's `main` at the time of this bump), which carries:
+        #   - #341 -- path+rule exemptions (a caller-supplied `.firewallignore`)
+        #   - #343 -- require content corroboration, not name alone, before the
+        #     vendored-denylist basename skip drops a file from the scan
+        #   - #348 -- stop an input description evaluating as a template
+        #     expression, which had made this action unloadable for every
+        #     consumer. This repo's own dogfood job was still testing the OLD
+        #     scanner at the time and could not have caught it -- this pin is
+        #     why #348 shipped at all.
+        # Track directly, not via `v1`: that tag sits behind all three fixes
+        # above and moving it is a separate, estate-wide, deliberate change.
+        uses: arqtiqa/arqtos-actions/.github/actions/firewall@b27c7456bce9937159b6c59e3deb0c88692996cb  # main
         with:
           # ⚠️ The denylist lives HERE and is passed in. The action ships none
           # and must never ship one — read `action.yml`, which is in this same
