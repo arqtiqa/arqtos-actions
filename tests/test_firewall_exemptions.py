@@ -172,6 +172,62 @@ def test_two_rules_on_the_same_file_need_two_entries(tmp_path):
         f"stderr:\n{p.stderr.decode()}")
 
 
+# --- ⚠️ regression: widening must not crash on an EMPTY file list ---------
+#
+# Fix round 1 (arqtiqa/arqtos#341 PR #7 review). `for f in "${widened_files[@]}"`
+# was an unguarded empty-array expansion: under bash 3.2 (macOS's stock
+# `/bin/bash`, and this sandbox's own default interpreter), `"${arr[@]}"` on an
+# EMPTY array under `set -u` throws "unbound variable" and the script dies with
+# exit 1 -- NOT the intended exit-2 stale-exemption diagnostic. `--all-tracked`
+# never hits this (its file list always comes from a real `git ls-files`), but
+# `--files0` outside a git work tree -- a real shape for a local run or a
+# pre-push hook on a directory that is not (yet) a git repo -- calls
+# `git ls-files -z` for the widening fallback and gets NOTHING back, so
+# `widened_files` stays legitimately empty. This is the same failure class the
+# file's own header already guards `exemptions_arg` against in action.yml; it
+# was reintroduced here through a different array.
+
+def test_widening_over_an_empty_file_list_does_not_crash(tmp_path):
+    """⚠️ THE crash, reproduced directly. No `git init` at all -- `git ls-files`
+    (the widening fallback) has no work tree to query and returns nothing, so
+    the loop over `widened_files` must run zero times, not blow up the script.
+
+    Before the fix this exits 1 with `bash: ... widened_files[@]: unbound
+    variable` on stderr, on bash 3.2 -- NOT the exit 2 / "matches no tracked
+    file" diagnostic the stale exemption should produce."""
+    r = tmp_path / "r"
+    r.mkdir()
+    (r / "dl.txt").write_text(PROBE_A + "\n")
+    (r / "leak.md").write_text(f"leak {PROBE_A} here\n")
+    (r / ".firewallignore").write_text(f"genuinely-nowhere.md\t{PROBE_A}\treason\n")
+    p = run(r, "--denylist=dl.txt", "--files0", stdin=b"leak.md\0")
+    assert p.returncode == MISCONFIGURED, (
+        f"expected the stale-exemption diagnostic (exit 2), got {p.returncode}\n"
+        f"stderr:\n{p.stderr.decode()}")
+    err = p.stderr.decode()
+    assert "unbound variable" not in err, (
+        f"crashed on the empty-array expansion instead of reporting staleness:\n{err}")
+    assert "matches no tracked file" in err
+
+
+def test_widening_over_an_empty_tracked_tree_does_not_crash(tmp_path):
+    """The mirror shape: a real git work tree that legitimately tracks
+    nothing yet (a fresh `git init` with no commits) -- `git ls-files` succeeds
+    but returns zero lines, so `widened_files` is still empty."""
+    r = tmp_path / "r"
+    r.mkdir()
+    subprocess.run(["git", "init", "-qb", "main"], cwd=r, check=True)
+    (r / "dl.txt").write_text(PROBE_A + "\n")
+    (r / "leak.md").write_text(f"leak {PROBE_A} here\n")
+    (r / ".firewallignore").write_text(f"genuinely-nowhere.md\t{PROBE_A}\treason\n")
+    # Deliberately NOT `git add` -- the tracked tree stays empty.
+    p = run(r, "--denylist=dl.txt", "--files0", stdin=b"leak.md\0")
+    assert p.returncode == MISCONFIGURED, (
+        f"expected the stale-exemption diagnostic (exit 2), got {p.returncode}\n"
+        f"stderr:\n{p.stderr.decode()}")
+    assert "unbound variable" not in p.stderr.decode()
+
+
 # --- ⚠️ fail closed on a stale entry (arqtos-cli#986's precedent) ----------
 
 def test_a_path_glob_matching_no_tracked_file_is_MISCONFIGURED(tmp_path):

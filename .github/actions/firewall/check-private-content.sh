@@ -171,7 +171,7 @@ if [[ -f "$exemptions" ]]; then
   exemptions_real=$(cd "$(dirname "$exemptions")" && pwd -P)/$(basename "$exemptions")
 fi
 existing_files=()
-for f in "${files[@]}"; do
+for f in "${files[@]+"${files[@]}"}"; do
   [[ ! -f "$f" ]] && continue
   f_real=$(cd "$(dirname "$f")" && pwd -P)/$(basename "$f")
   if [[ "$f_real" == "$denylist_real" ]]; then
@@ -316,6 +316,12 @@ if [[ -f "$exemptions" ]]; then
       denylist_rules+=("$dl_line")
     done < "$denylist"
 
+    # denylist_rules is expected non-empty here (the rule-count guard near the
+    # top of the script already refused an all-comment/all-blank denylist),
+    # but every array below is expanded via the nounset-safe idiom anyway --
+    # this file's whole point is not trusting "should never be empty" for an
+    # externally-supplied file's content.
+
     # arqtos-cli#998 parity: a glob that matches nothing in THIS run's file
     # list is re-checked against the full tracked tree before being called
     # stale — otherwise a caller scanning a narrow explicit file list (a PR
@@ -333,7 +339,7 @@ if [[ -f "$exemptions" ]]; then
       r="${exempt_rules[$idx]}"
 
       matched=0
-      for f in "${existing_files[@]}"; do
+      for f in "${existing_files[@]+"${existing_files[@]}"}"; do
         if [[ "$f" =~ ^${ere}$ ]]; then
           matched=1
           break
@@ -346,7 +352,14 @@ if [[ -f "$exemptions" ]]; then
         done < <(git ls-files -z 2>/dev/null || true)
       fi
       if (( ! matched )); then
-        for f in "${widened_files[@]}"; do
+        # ⚠️ Nounset-safe expansion (matches the `exemptions_arg` guard in
+        # action.yml) -- REQUIRED, not decorative: bash 3.2 (macOS's stock
+        # `/bin/bash`, and this sandbox's default) throws "unbound variable"
+        # on a plain "${arr[@]}" when arr is EMPTY under `set -u`. widened_files
+        # is legitimately empty outside a git work tree (or one with no
+        # tracked files) -- exactly the shape a `--files0` / local / pre-push
+        # invocation can hit, and exactly the crash a reviewer reproduced here.
+        for f in "${widened_files[@]+"${widened_files[@]}"}"; do
           if [[ "$f" =~ ^${ere}$ ]]; then
             matched=1
             break
@@ -359,7 +372,7 @@ if [[ -f "$exemptions" ]]; then
       fi
 
       rule_known=0
-      for dl in "${denylist_rules[@]}"; do
+      for dl in "${denylist_rules[@]+"${denylist_rules[@]}"}"; do
         if [[ "$dl" == "$r" ]]; then
           rule_known=1
           break
@@ -394,10 +407,10 @@ while IFS= read -r line; do
   # files end up flagged or not), and sidesteps re-parsing grep's own
   # `file:line:content` output, which cannot be split back into "which
   # file" reliably once a path itself might contain a colon.
-  scan_targets=("${existing_files[@]}")
+  scan_targets=("${existing_files[@]+"${existing_files[@]}"}")
   if (( ${#exempt_globs[@]} > 0 )); then
     rule_is_exempted=0
-    for r in "${exempt_rules[@]}"; do
+    for r in "${exempt_rules[@]+"${exempt_rules[@]}"}"; do
       if [[ "$r" == "$line" ]]; then
         rule_is_exempted=1
         break
@@ -405,7 +418,7 @@ while IFS= read -r line; do
     done
     if (( rule_is_exempted )); then
       scan_targets=()
-      for f in "${existing_files[@]}"; do
+      for f in "${existing_files[@]+"${existing_files[@]}"}"; do
         skip=0
         for idx in "${!exempt_globs[@]}"; do
           if [[ "${exempt_rules[$idx]}" == "$line" ]] && [[ "$f" =~ ^${exempt_eres[$idx]}$ ]]; then
@@ -468,7 +481,7 @@ while IFS= read -r line; do
   # failure is a MISCONFIGURATION (exit 2), never a clean result — same rule the
   # rule-count guard above applies to an empty denylist.
   : >"$grep_stderr"
-  matches=$(grep -nIHE -e "$line" "${scan_targets[@]}" 2>"$grep_stderr") \
+  matches=$(grep -nIHE -e "$line" "${scan_targets[@]+"${scan_targets[@]}"}" 2>"$grep_stderr") \
     && grep_status=0 || grep_status=$?
 
   if (( grep_status >= 2 )); then
