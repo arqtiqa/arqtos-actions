@@ -524,11 +524,18 @@ def test_overlay_leading_hyphen_pattern_still_applies_via_dash_f(tmp_path):
     """A nice side effect of `-f`: a pattern beginning with `-` was never
     grep's problem in the first place when fed via a file rather than argv
     (unlike the denylist's own `-e` loop, which needs `-e` for exactly this
-    reason). Confirms the fix didn't accidentally break this class."""
+    reason). Confirms the fix didn't accidentally break this class.
+
+    ⚠️ Assembled at runtime, NEVER written as a literal (matches
+    `tests/test_firewall_failure_states.py`'s `HYPHEN_RULE` convention) --
+    this repo's own denylist carries this exact PEM pattern
+    (`.github/scripts/private-content-denylist.txt`), and a literal here
+    would trip `arqtos-actions`' own `firewall` CI check against its own
+    source, on this very file."""
     r = repo(tmp_path)
     (r / "dl.txt").write_text(CREDENTIAL_PROBE + "\n")
-    hyphen_pattern = "-----BEGIN [A-Z ]*PRIVATE KEY-----"
-    (r / "leak.md").write_text("-----BEGIN OPENSSH PRIVATE KEY-----\n")
+    hyphen_pattern = "-" * 5 + "BEGIN [A-Z ]*PRIVATE KEY" + "-" * 5
+    (r / "leak.md").write_text("-" * 5 + "BEGIN OPENSSH PRIVATE KEY" + "-" * 5 + "\n")
     add(r)
     p = run(r, "--denylist=dl.txt", "--all-tracked", overlay=hyphen_pattern)
     assert p.returncode == MATCHED, f"stderr:\n{p.stderr.decode()}"
