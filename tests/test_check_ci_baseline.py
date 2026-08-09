@@ -275,3 +275,106 @@ def test_an_ACTION_DEFINITION_is_still_checked_for_off_baseline_pins(tmp_path, c
         "runs:\n  using: composite\n  steps:\n    - uses: actions/checkout@v4\n")
     assert run(root, mpath) == VIOLATION
     assert "expected @v7" in capsys.readouterr().err
+
+
+# --- ⚠️ doubled CI: pull_request + an unfiltered push run every PR commit twice
+
+WF_DOUBLED = """
+on:
+  push:
+  pull_request:
+jobs:
+  a:
+    steps:
+      - uses: actions/checkout@v7
+"""
+
+WF_SCOPED = """
+on:
+  pull_request:
+  push:
+    branches: [main]
+jobs:
+  a:
+    steps:
+      - uses: actions/checkout@v7
+"""
+
+WF_PUSH_ONLY = """
+on:
+  push:
+    tags: ['v*']
+jobs:
+  a:
+    steps:
+      - uses: actions/checkout@v7
+"""
+
+WF_DISPATCH_AND_SCHEDULE = """
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 3 * * *'
+jobs:
+  a:
+    steps:
+      - uses: actions/checkout@v7
+"""
+
+
+def test_unfiltered_push_with_pull_request_is_a_VIOLATION(tmp_path, capsys):
+    assert run(*build(tmp_path, WF_DOUBLED)) == VIOLATION
+    # positive: the message must name the FIX, not merely report that a rule fired
+    assert "branches: [main]" in capsys.readouterr().err
+
+
+def test_scoped_push_with_pull_request_passes(tmp_path):
+    assert run(*build(tmp_path, WF_SCOPED)) == OK
+
+
+def test_push_only_workflow_passes(tmp_path):
+    assert run(*build(tmp_path, WF_PUSH_ONLY)) == OK
+
+
+def test_workflow_dispatch_and_schedule_pass(tmp_path):
+    assert run(*build(tmp_path, WF_DISPATCH_AND_SCHEDULE)) == OK
+
+
+# --- ⚠️ fix round 1: a push scoped ONLY by tags: cannot fire on an ordinary
+# branch commit at all, so it cannot double against pull_request -----------
+
+WF_PUSH_TAGS_ONLY_WITH_PR = """
+on:
+  pull_request:
+  push:
+    tags: ['v*']
+jobs:
+  a:
+    steps:
+      - uses: actions/checkout@v7
+"""
+
+WF_PUSH_TAGS_AND_BRANCHES_WITH_PR = """
+on:
+  pull_request:
+  push:
+    tags: ['v*']
+    branches: [main]
+jobs:
+  a:
+    steps:
+      - uses: actions/checkout@v7
+"""
+
+
+def test_tags_only_push_with_pull_request_passes(tmp_path):
+    """A `push:` scoped only by `tags:` never fires on an ordinary branch
+    commit, so it cannot double against `pull_request` — this is a realistic
+    shape (a workflow that runs on PRs and on release tags)."""
+    assert run(*build(tmp_path, WF_PUSH_TAGS_ONLY_WITH_PR)) == OK
+
+
+def test_tags_and_branches_push_with_pull_request_passes(tmp_path):
+    """`branches:` alongside `tags:` must still be evaluated on the
+    `branches:` key — declaring tags too does not change that."""
+    assert run(*build(tmp_path, WF_PUSH_TAGS_AND_BRANCHES_WITH_PR)) == OK
