@@ -1,58 +1,48 @@
-# ⚠️ THIS REPO IS PUBLIC. That is the whole reason this gate exists here.
+# THROWAWAY LOAD-PROOF PROBE for arqtiqa/arqtos#344 -- arqtos-actions PR only,
+# never merged, branch deleted after observation. Mirrors the method used for
+# the arqtos#348 probe (see that Story's report): a real consumer resolving
+# `uses:` at a candidate SHA is the only way to catch a template-validation
+# failure, since YAML linting does not perform template validation.
 #
-# The private-content firewall stops private content reaching a public surface.
-# It was running on private repos, where publishing is impossible, and absent
-# from the public ones, where publishing is the point (arqtos-sdk-go#38). A
-# repo with no firewall is the silent-clean failure state with the middle step
-# removed: the green check is already there and nothing is scanning.
+# Proves action.yml at c2ee8f50d4b9ad28f70c8b69432aaa8e712780a0
+# (feat/344-require-identity-overlay) still LOADS as a composite action, in
+# both input shapes:
+#   - probe-without-input: no require-identity-overlay at all (the shape
+#     every one of the 15 existing callers is in) -- must behave exactly as
+#     before this Story.
+#   - probe-with-input: require-identity-overlay: 'true', no identity-overlay
+#     secret wired, on an ORDINARY same-repo pull request (not a fork, not
+#     Dependabot) -- expected to load fine and then correctly FAIL (exit 2,
+#     the misconfiguration path), which is stronger evidence than a bare
+#     load: it proves the whole pipeline ran (template parsed, composite
+#     steps executed, script reached the new branch) AND that the
+#     github.actor / github.event.pull_request.head.repo.fork expression
+#     correctly evaluates to "secret could exist here" for a normal PR
+#     (if it had wrongly evaluated true, this job would have passed instead).
 name: firewall
 
 on:
   pull_request:
-  push:
-    branches: [main]
 
 permissions:
   contents: read
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
 jobs:
-  firewall:
+  probe-without-input:
+    name: "probe: without require-identity-overlay (unchanged shape)"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-
-      - name: Scan tracked files against denylist
-        # ⚠️ SHA-pinned, unlike the other shared actions here which use @v1, and
-        # the baseline manifest requires it: this is the only shared action that
-        # is a GATE. A compromised gate does not break the build — it returns a
-        # GREEN CHECK on a repo whose scan is no longer running. Bump
-        # deliberately, reading the diff.
-        #
-        # ⚠️ THIS IS THIS REPO'S OWN PIN OF ITS OWN ACTION (arqtos#346). It sat at
-        # e294a60 while this repo's `main` moved on, so the repo that SHIPS the
-        # exemptions mechanism had never exercised it against itself. Bumped to
-        # b27c7456 (this repo's `main` at the time of this bump), which carries:
-        #   - #341 -- path+rule exemptions (a caller-supplied `.firewallignore`)
-        #   - #343 -- require content corroboration, not name alone, before the
-        #     vendored-denylist basename skip drops a file from the scan
-        #   - #348 -- stop an input description evaluating as a template
-        #     expression, which had made this action unloadable for every
-        #     consumer. This repo's own dogfood job was still testing the OLD
-        #     scanner at the time and could not have caught it -- this pin is
-        #     why #348 shipped at all.
-        # Track directly, not via `v1`: that tag sits behind all three fixes
-        # above and moving it is a separate, estate-wide, deliberate change.
-        uses: arqtiqa/arqtos-actions/.github/actions/firewall@b27c7456bce9937159b6c59e3deb0c88692996cb  # main
+      - uses: arqtiqa/arqtos-actions/.github/actions/firewall@c2ee8f50d4b9ad28f70c8b69432aaa8e712780a0  # probe: #344
         with:
-          # ⚠️ The denylist lives HERE and is passed in. The action ships none
-          # and must never ship one — read `action.yml`, which is in this same
-          # repository. A missing list is exit 2 (misconfigured), never a pass.
-          #
-          # This is arqtos-actions' own caller list, scoped to its own audience.
-          # It is NOT the action's default; the file's header says so too,
-          # because this is the one repo where that mistake is possible.
           denylist: .github/scripts/private-content-denylist.txt
+
+  probe-with-input:
+    name: "probe: with require-identity-overlay=true (new shape)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: arqtiqa/arqtos-actions/.github/actions/firewall@c2ee8f50d4b9ad28f70c8b69432aaa8e712780a0  # probe: #344
+        with:
+          denylist: .github/scripts/private-content-denylist.txt
+          require-identity-overlay: 'true'
