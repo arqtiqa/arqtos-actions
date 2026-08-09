@@ -41,8 +41,19 @@ inputs:
       repository root if present; a missing DEFAULT is fine (no exemptions
       committed yet). An explicitly-set value naming a path that does not
       exist is a configuration error (exit 2). A stale entry -- a path glob
-      matching no tracked file, or a rule matching no pattern in this run's
-      denylist -- is ALSO a configuration error, never a silent no-op.
+      matching no tracked file, or a VERBATIM rule matching no pattern active
+      in this run -- is ALSO a configuration error, never a silent no-op.
+
+      An identity-overlay rule is named by RULE HANDLE rather than by its text
+      (arqtiqa/arqtos#365): `sha256:` plus the first 12 hex digits of the
+      SHA-256 of the pattern. This file is committed and an overlay pattern is
+      a secret, so an exemption has to name a rule it must never quote -- and
+      a handle, unlike a position, cannot silently re-point at a different
+      rule when the overlay is reordered. A handle that resolves to no active
+      pattern (the overlay is absent in this context, or the rule was edited)
+      is held INERT and disclosed, not a configuration error: the rule it
+      named is then scanned rather than suppressed. A failing run prints the
+      handle to use, so nobody computes one by hand.
     required: false
     default: ''
   identity-overlay:
