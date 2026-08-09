@@ -9,6 +9,9 @@
 #   check-private-content.sh --exemptions=<path> ...   # override exemptions file
 #   ARQTOS_FIREWALL_IDENTITY_OVERLAY="$(pattern lines)" check-private-content.sh ...
 #                                                       # union in the identity tier
+#   ARQTOS_FIREWALL_REQUIRE_IDENTITY_OVERLAY=true check-private-content.sh ...
+#                                                       # insist on identity coverage
+#                                                       # (arqtiqa/arqtos#344)
 #
 # Exits 0 if no matches, 1 if any pattern fires (with file:line:pattern
 # context on stderr), 2 on configuration error (missing denylist, etc).
@@ -19,6 +22,20 @@
 # (unset or empty) is a legitimate, stated, credential-tier-only run. Set
 # but resolving to zero usable pattern lines is a configuration error
 # (exit 2). The overlay's own pattern text is never printed.
+#
+# ARQTOS_FIREWALL_REQUIRE_IDENTITY_OVERLAY (optional, arqtiqa/arqtos#344) --
+# set to the literal string "true" to turn an absent overlay from a stated
+# default into a misconfiguration (exit 2), EXCEPT in a run where GitHub is
+# known to withhold the secret (a fork pull request, or Dependabot), where it
+# instead reports identity coverage as required-but-unverified rather than
+# failing. See the module doc further down ("require-identity-overlay") for
+# the full "why", and this action's action.yml for how the fork/Dependabot
+# context is derived (ARQTOS_FIREWALL_OVERLAY_MAY_BE_WITHHELD) -- never a
+# caller-supplied input, so a caller cannot set its way out of the
+# requirement. Only the exact strings "true" and "false" (or unset/empty,
+# treated as "false") are accepted -- this is a security opt-in, so any
+# other value (a typo like "TRUE", "yes", "1") is a configuration error
+# (exit 2) rather than a silent no-op.
 #
 # --exemptions=<path> (optional) names a committed path+rule escape hatch
 # (arqtiqa/arqtos-cli#851) for content that is DELIBERATELY supposed to look
@@ -216,13 +233,154 @@ if [[ -n "$overlay_raw" ]]; then
   fi
 fi
 
-# ⚠️ STATED, NEVER SILENT (arqtiqa/arqtos#342). A green run must never imply
-# coverage it did not have. Printed unconditionally, before any scanning and
-# regardless of outcome, mirroring the reference Go verb's own
-# "tier=work (N patterns, no overlay)" vs "tier=work (N patterns) +overlay=…"
-# report line -- this is that same honesty, in the shell scanner.
+# ---------------------------------------------------------------------------
+# require-identity-overlay (arqtiqa/arqtos#344) -- an opt-in that lets a
+# caller INSIST on identity coverage rather than silently accepting its
+# absence. Default is off (ARQTOS_FIREWALL_REQUIRE_IDENTITY_OVERLAY unset or
+# any value other than the literal string "true"): every one of this action's
+# existing callers never sets this, so this whole block is a no-op for all of
+# them -- unreached, because the guard below only fires when BOTH this is
+# true AND overlay_rules is still empty at this point (which, given the block
+# above, means the overlay was ABSENT -- unset or the literal empty string --
+# never "present but empty", which already exited 2 above regardless of this
+# input).
+#
+# ⚠️ THE CENTRAL DIFFICULTY (see this Story's brief in full): the repositories
+# that most need required coverage are exactly the ones with external
+# collaborators, where GitHub withholds Actions secrets from a fork pull
+# request -- and from a Dependabot-triggered run, which has its own separate
+# secret store. A flat "required means red-when-absent" would turn every
+# external contribution red on exactly the repos whose purpose is external
+# contribution, training reviewers to read red as noise -- the
+# arqtos-skills#85 failure mode, one level up.
+#
+# The fix follows the precedent named in the brief: arqtos-skills'
+# estate-identifiers job skips on Dependabot instead of failing, and recovers
+# coverage through an unconditional `push: branches: [main]` run that
+# executes with the real secret the moment a fork PR merges. Applied here as
+# THREE distinguishable outcomes rather than two:
+#
+#   1. required, overlay present & valid        -> unchanged: scans with it.
+#   2. required, overlay absent, secret COULD
+#      exist in this context (not a fork PR,
+#      not Dependabot)                          -> MISCONFIGURED (exit 2).
+#      This is the case the Story exists for: never wired, a secret renamed
+#      or rotated out from under the workflow, or repository visibility that
+#      never covered this repo.
+#   3. required, overlay absent, secret is
+#      LEGITIMATELY withheld (fork PR / Dependabot) -> NOT red. Reports that
+#      identity coverage could not be verified THIS run, distinctly from both
+#      a clean +overlay run and a failure -- see the three-way disclosure
+#      below. The merge-time `push: branches: [main]` run is the backstop
+#      that actually verifies coverage once the change lands on main, running
+#      with the real secret; this action cannot supply that trigger itself,
+#      which is why the input's own description tells a caller to wire it.
+#
+# ⚠️ WHICH CONTEXT THE SECRET COULD EXIST IN IS NOT A CALLER-SUPPLIED INPUT,
+# ON PURPOSE. It is derived entirely from ambient `github.*` context in
+# action.yml (the actor, and whether a pull request's head repository
+# DIFFERS FROM this run's own repository -- NOT merely "is a fork of
+# something", which round-1 review found would wrongly exempt every
+# same-repo PR on a consuming repository that is itself a fork of some
+# upstream) and handed down as ARQTOS_FIREWALL_OVERLAY_MAY_BE_WITHHELD -- a
+# caller cannot set this via `with:` to talk its way out of the
+# requirement, because a fork PR's own workflow definition is never the one
+# that runs (GitHub always runs the BASE branch's workflow file for a
+# `pull_request` trigger), and `github.actor` is set by the platform, not
+# the caller's YAML.
+#
+# ⚠️ arqtiqa/arqtos#344 round-1 review, SHOULD-FIX: require_overlay_raw is a
+# CALLER-SUPPLIED input (unlike overlay_may_be_withheld_raw below, which
+# action.yml computes and always renders a literal 'true'/'false'), so a
+# typo here is a real hazard -- 'TRUE', 'yes', '1' would all silently
+# no-op a caller's security opt-in, turning an intended requirement into an
+# unnoticed credential-tier-only run. That is exactly the silent-degradation
+# class this Story exists to close, so it is refused (exit 2), never
+# quietly treated as 'false' -- the same "fail closed on an unrecognised
+# value" discipline the rest of this file already applies to a denylist
+# rule grep cannot compile.
+require_overlay_raw="${ARQTOS_FIREWALL_REQUIRE_IDENTITY_OVERLAY:-}"
+require_overlay=0
+case "$require_overlay_raw" in
+  "" | "false")
+    ;;
+  "true")
+    require_overlay=1
+    ;;
+  *)
+    echo "✗ check-private-content: require-identity-overlay must be the literal string 'true' or 'false' (got '$require_overlay_raw')." >&2
+    echo "  This input is a security opt-in -- silently treating an unrecognised value" >&2
+    echo "  as 'false' would let a typo turn a caller's intended requirement into an" >&2
+    echo "  unnoticed credential-tier-only run. Use exactly 'true' or 'false'." >&2
+    exit 2
+    ;;
+esac
+
+# overlay_may_be_withheld_raw is NOT caller-supplied (action.yml computes it
+# from ambient github.* context and always renders a literal 'true' or
+# 'false' -- see action.yml's own comment on ARQTOS_FIREWALL_OVERLAY_MAY_BE_WITHHELD
+# for why it can never be anything else), so there is no equivalent typo
+# surface here to fail closed on; the strict equality check below already
+# matches require_overlay_raw's own strictness -- only the exact string
+# 'true' counts as true.
+overlay_may_be_withheld_raw="${ARQTOS_FIREWALL_OVERLAY_MAY_BE_WITHHELD:-}"
+overlay_may_be_withheld=0
+if [[ "$overlay_may_be_withheld_raw" == "true" ]]; then
+  overlay_may_be_withheld=1
+fi
+
+# This run's identity tier, for the three-way disclosure just below. Left at
+# 0 on every path except outcome 3 above.
+overlay_required_unverified=0
+
+if (( require_overlay )) && [[ "${#overlay_rules[@]}" -eq 0 ]]; then
+  if (( overlay_may_be_withheld )); then
+    overlay_required_unverified=1
+  else
+    echo "✗ check-private-content: require-identity-overlay is set, but no identity overlay was supplied and this run is not one where GitHub is known to withhold the secret (not a fork pull request, not a Dependabot-triggered run)." >&2
+    echo "  This is the case require-identity-overlay exists to catch: the secret was" >&2
+    echo "  never wired, renamed, rotated, or its repository visibility never covered" >&2
+    echo "  this repository." >&2
+    echo "  Wire the identity-overlay input from the org secret" >&2
+    echo "  ARQTOS_FIREWALL_IDENTITY_OVERLAY (see this action's own input" >&2
+    echo "  description for the exact syntax), or remove require-identity-overlay if" >&2
+    echo "  credential-tier-only coverage is intentional for this repository." >&2
+    exit 2
+  fi
+fi
+
+# ⚠️ STATED, NEVER SILENT (arqtiqa/arqtos#342, extended by #344). A green run
+# must never imply coverage it did not have. Printed unconditionally, before
+# any scanning and regardless of outcome, mirroring the reference Go verb's
+# own "tier=work (N patterns, no overlay)" vs "tier=work (N patterns)
+# +overlay=…" report line -- this is that same honesty, in the shell
+# scanner, now in three mutually exclusive forms so a reader (or a log
+# grep) can always tell which of the three actually happened:
+#
+#   +identity overlay (M pattern(s))       -- tier ran, found nothing extra.
+#   REQUIRED but UNVERIFIED this run       -- tier did NOT run; required, but
+#                                              the secret is legitimately
+#                                              withheld in this context.
+#   no identity overlay -- credential-tier only -- tier did not run; not
+#                                              required, so this is simply
+#                                              the default, unchanged since
+#                                              #342.
+#
+# None of the three strings is a substring of either of the other two --
+# verified directly in tests/test_firewall_require_identity_overlay.py --
+# so a caller grepping logs for one state can never get a false positive
+# from another.
 if [[ "${#overlay_rules[@]}" -gt 0 ]]; then
   echo "info: check-private-content: denylist ($rule_count pattern(s)) +identity overlay (${#overlay_rules[@]} pattern(s))" >&2
+elif (( overlay_required_unverified )); then
+  # ⚠️ Also emitted as a `::warning::` workflow command (arqtiqa/arqtos#344) --
+  # GitHub Actions renders this as a distinct annotation on an otherwise
+  # GREEN run, which is the visual half of "distinguishable from both a
+  # clean full run and a failure": a plain credential-tier-only run (no
+  # `require-identity-overlay`) carries no annotation at all, and a genuine
+  # failure is red, not a green run with a warning icon.
+  echo "::warning::check-private-content: identity coverage is REQUIRED but could not be verified this run -- the overlay secret is unavailable in a context where GitHub is expected to withhold it (fork pull request or Dependabot). Scanned credential-tier only. The push-to-main run after merge, which runs with the real secret, is the backstop that verifies coverage for this change."
+  echo "info: check-private-content: denylist ($rule_count pattern(s)), identity coverage REQUIRED but UNVERIFIED this run (overlay secret unavailable in this context) -- credential-tier only" >&2
 else
   echo "info: check-private-content: denylist ($rule_count pattern(s)), no identity overlay -- credential-tier only" >&2
 fi
