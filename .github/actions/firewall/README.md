@@ -6,6 +6,9 @@ Scans tracked files against a **caller-supplied** denylist. Fails when any patte
 - uses: arqtiqa/arqtos-actions/.github/actions/firewall@<40-char-sha>  # v1
   with:
     denylist: .github/scripts/private-content-denylist.txt
+    # optional -- see "Exemptions" below; omit to use the default
+    # .firewallignore convention path if the repo has one
+    exemptions: .firewallignore
 ```
 
 ## ⚠️ Pin this action to a commit SHA — it is the one that does not use `@v1`
@@ -52,6 +55,27 @@ The check is duplicated deliberately — in this action *and* in the script — 
 |---|---|---|
 | `denylist` | **yes** | no default, no bundled fallback; absent or unreadable → `2` |
 | `files` | no | space/newline-separated; defaults to `git ls-files` |
+| `exemptions` | no | path+rule exemptions file; empty defaults to `.firewallignore` at the repo root if present — see "Exemptions" below |
+
+## Exemptions
+
+A denylist rule sometimes legitimately fires on content that is **deliberately** shaped like a violation — a doc teaching a credential-reference syntax by example, or a fixture whose entire purpose is a concrete secret-shaped string a detector test asserts against. Without an escape hatch, a repo with any such fixture gets a **permanently red** gate on material that is entirely legitimate, and a permanently-red gate gets disabled rather than obeyed.
+
+`exemptions` names a committed file of one exemption per line, three **mandatory** whitespace-separated fields:
+
+```
+<path-glob>  <rule>  <reason>
+```
+
+A tab or 2+ spaces separates the fields (a single space is ordinary prose punctuation, not a boundary). `<path-glob>` is matched `*`/`?`-never-crosses-`/` style against a scanned file's path; `<rule>` must equal a denylist line's exact text, copied verbatim; `<reason>` is a mandatory one-line justification — never optional, since that is what stops this file from growing into a blanket suppression nobody has to justify. Blank lines and full-line `#` comments are skipped, same convention as the denylist itself.
+
+⚠️ **Scoped as narrowly as the mechanism allows: path + one specific rule, never "skip this rule everywhere" and never "skip every rule for this path."** A fixture needing two rules exempted gets two entries. An exemption suppresses only its own named (path, rule) pair — a file exempted for one rule still fails on any other rule that also matches it.
+
+⚠️ **Fail closed on a stale entry.** A path glob matching no tracked file, or a rule matching no pattern in the denylist actually in force, is a **configuration error (exit 2)**, never a silent no-op — validated before any scanning happens, exactly like the denylist's own empty-file guard above. A stale exemption left in place after its target is renamed, deleted, or its pattern is tightened would otherwise rot into a permanent, invisible blind spot.
+
+Absent is fine: with no `exemptions` input and no `.firewallignore` present, behaviour is unchanged from a build with no exemptions mechanism at all. An **explicitly-named** `exemptions` path that does not exist, though, is a configuration error — naming one on purpose is a deliberate pointer, not an optional convention.
+
+This is the same format and the same fail-closed validation the reference Go implementation of this policy already uses (see "There is a second implementation of this policy" below), so one committed exemptions file serves both engines.
 
 ## Why the script is vendored inside this action
 
