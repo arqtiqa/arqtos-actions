@@ -46,7 +46,7 @@ jobs:
         #     why #348 shipped at all.
         # Track directly, not via `v1`: that tag sits behind all three fixes
         # above and moving it is a separate, estate-wide, deliberate change.
-        uses: arqtiqa/arqtos-actions/.github/actions/firewall@b27c7456bce9937159b6c59e3deb0c88692996cb  # main
+        uses: arqtiqa/arqtos-actions/.github/actions/firewall@aaaf6d5da05725b6c2b0d08ddd651b68d9ad84af  # v1.2.0
         with:
           # ⚠️ The denylist lives HERE and is passed in. The action ships none
           # and must never ship one — read `action.yml`, which is in this same
