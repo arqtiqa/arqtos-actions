@@ -22,7 +22,7 @@ author: 'arqtiqa/arqtos-actions'
 inputs:
   manifest:
     description: >-
-      Path to ci-baseline.yml. Defaults to the copy inside this action, so a
+      Path to ci-baseline.yaml. Defaults to the copy inside this action, so a
       consumer normally supplies nothing and cannot drift from the baseline by
       holding a stale copy of it.
     required: false
@@ -45,7 +45,7 @@ runs:
         ACTION_PATH: ${{ github.action_path }}
       run: |
         set -euo pipefail
-        manifest="${INPUT_MANIFEST:-$ACTION_PATH/../../../ci-baseline.yml}"
+        manifest="${INPUT_MANIFEST:-$ACTION_PATH/../../../ci-baseline.yaml}"
         # ⚠️ Deliberately NOT falling back to "scan nothing" if the manifest is
         # absent — the gate itself exits 2 in that case. A gate that skips when
         # its input is missing is the vacuous pass it exists to prevent.

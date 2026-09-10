@@ -4,7 +4,7 @@ author: 'arqtiqa/arqtos-actions'
 
 # ⚠️ THE VERSION BELOW IS THE ONLY PLACE IT LIVES.
 #
-# A composite action cannot read ci-baseline.yml to discover its own pin — the
+# A composite action cannot read ci-baseline.yaml to discover its own pin — the
 # `uses:` line is resolved before any step runs. So the pin is literal here, and
 # the manifest's job is to say that CONSUMERS MUST NOT REFERENCE setup-uv
 # DIRECTLY. That is what keeps this a single source rather than a second one:

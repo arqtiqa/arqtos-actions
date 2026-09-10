@@ -56,7 +56,7 @@ Pin the **moving major tag** `@v1` — not `@main`, and not an exact SHA.
 
 ## The baseline manifest
 
-[`ci-baseline.yml`](ci-baseline.yml) declares the version of every action used by two or more consumers. The gate reads it and fails a pull request pinning a governed action off it.
+[`ci-baseline.yaml`](ci-baseline.yaml) declares the version of every action used by two or more consumers. The gate reads it and fails a pull request pinning a governed action off it.
 
 ⚠️ It carries **no organisation specifics** — no repository names, no work-item references, no internal metrics. Version pins are not sensitive; **which of your repositories lags is.** Estate-specific detail (which repos a pin moves, what to re-verify per consumer) lives on the private side and is derived by scanning rather than stored, so there is no list to go stale.
 

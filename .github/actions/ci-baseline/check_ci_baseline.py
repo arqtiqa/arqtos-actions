@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """check_ci_baseline.py — enforce the declared CI baseline in a consumer repo.
 
-Realizes REQ-ARQ-J-09. Reads ci-baseline.yml (the manifest) and rejects, in the
+Realizes REQ-ARQ-J-09. Reads ci-baseline.yaml (the manifest) and rejects, in the
 consumer's workflows and pre-commit config:
 
   1. a bare interpreter or unpinned installer  (`python3`, `pip install`,
@@ -161,7 +161,7 @@ def load_manifest(path: Path) -> Manifest | int:
     if not path.is_file():
         return die_misconfigured(
             f"manifest not found at {path}",
-            "point --manifest at ci-baseline.yml. A scan with no baseline would "
+            "point --manifest at ci-baseline.yaml. A scan with no baseline would "
             "pass every workflow, which is why this is an error and not a warning.",
         )
     try:
@@ -399,7 +399,7 @@ def scan_repo(root: Path, m: Manifest, exceptions: dict[str, str]) -> list[Findi
 
 def run(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description="Enforce the declared CI baseline (REQ-ARQ-J-09).")
-    ap.add_argument("--manifest", required=True, help="path to ci-baseline.yml")
+    ap.add_argument("--manifest", required=True, help="path to ci-baseline.yaml")
     ap.add_argument("--root", default=".", help="repository root to scan")
     a = ap.parse_args(argv)
 
