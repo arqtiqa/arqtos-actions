@@ -1,0 +1,21 @@
+# The estate's YAML-extension exemptions. ONE PLACE, deliberately: an exemption
+# added here reaches every repository that calls this action, and a repository
+# cannot grant itself one.
+#
+# Format: <kind>:<value>|<the tool that dictates the spelling>
+#
+#   name:<basename>   the tool reads exactly that filename
+#   dir:<prefix>      the tool reads any name under that directory
+#
+# ⚠️ AN EXEMPTION NAMES A TOOL, NOT A PREFERENCE. "we prefer .yml" is not an
+# entry. If the tool accepts both spellings there is nothing to exempt — which
+# is why action.yml is NOT here: GitHub documents action.yml and action.yaml
+# both, so arqtiqa/arqtos-core#206 ruled they are renamed, not exempted.
+
+name:dependabot.yml|GitHub reads only .github/dependabot.yml; .yaml is not supported
+
+# ⚠️ DIRECTORY-KEYED, and the difference from the line above is the point.
+# GitHub reads ANY name under .github/ISSUE_TEMPLATE/, so a name-keyed entry
+# would either miss a template added tomorrow or spare a bug.yml anywhere in
+# the tree. The tool's rule is about the directory, so the entry is too.
+dir:.github/ISSUE_TEMPLATE/|GitHub's issue-forms documentation names only .yml, and a wrong extension does not error - the template silently stops appearing

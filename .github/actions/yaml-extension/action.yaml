@@ -1,0 +1,51 @@
+name: 'YAML extension gate'
+description: 'Assert arqtos-authored YAML is .yaml, against one estate-wide exemption list.'
+author: 'arqtiqa/arqtos-actions'
+
+# ⚠️ THIS FILE IS action.yaml, NOT action.yml, AND THAT IS DELIBERATE.
+#
+# GitHub documents both spellings, which is precisely why arqtiqa/arqtos-core#206
+# ruled that action.yml is RENAMED rather than exempted: an S0 exemption means
+# "the tool dictates the spelling", and here it does not. This file is the live
+# proof that the ruling is safe — if .yaml did not resolve, this action would
+# not run at all, and every consumer would find out immediately.
+#
+# ⚠️ AND NOTE WHAT THIS ACTION DOES NOT OFFER: a way for a repository to add its
+# own exemption. The list is shipped beside this file and there is no input to
+# override it, because a per-repository override is how one policy becomes six.
+# Adding an exemption is a change here, reviewed once, reaching everybody.
+
+inputs:
+  root:
+    description: >-
+      Directory to census, relative to the workspace. Defaults to the whole
+      checkout. Narrow it only for a monorepo subtree; a narrowed root that
+      finds no YAML is REFUSED rather than passed.
+    required: false
+    default: '.'
+
+runs:
+  using: composite
+  steps:
+    # The script is resolved from github.action_path, not the caller's cwd, so
+    # the exemption list travels with the action rather than being looked for
+    # in the repository under test.
+    - name: Assert arqtos-authored YAML is .yaml
+      shell: bash
+      env:
+        INPUT_ROOT: ${{ inputs.root }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -uo pipefail
+        "$ACTION_PATH/check-yaml-extension.sh" \
+          --root="$INPUT_ROOT" \
+          --exemptions="$ACTION_PATH/exemptions.txt"
+        status=$?
+        if [ "$status" -eq 2 ]; then
+          echo "::error::the YAML extension gate REFUSED to judge - it did not run, which is not a pass. See the message above."
+          exit 2
+        fi
+        if [ "$status" -ne 0 ]; then
+          echo "::error::arqtos-authored YAML must be .yaml. Rename each file and every reference to it in the same commit."
+          exit "$status"
+        fi

@@ -38,3 +38,56 @@ jobs:
       # ⚠️ This repo is subject to its own gate. If the baseline is wrong, or
       # the gate is wrong, this job is the first place it shows.
       - uses: ./.github/actions/ci-baseline
+
+  yaml-extension-callable:
+    name: the YAML gate is callable, both directions
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      # ⚠️ THIS REPOSITORY IS NOT YET CONFORMANT — nine .yml remain, and
+      # renaming them is arqtiqa/arqtos-core#441, not this Story. So the gate
+      # cannot be pointed at the checkout yet. What IS proved here is the thing
+      # a design cannot prove about itself: that the composite action RESOLVES
+      # and RUNS through a real `uses:`, in both directions.
+      #
+      # The action is action.yaml, so this job is also the live proof of #206's
+      # ruling that .yaml resolves and action.yml needed no exemption. If it did
+      # not resolve, this job would fail rather than the estate finding out
+      # after six renames.
+      - name: a conformant tree
+        run: |
+          set -euo pipefail
+          mkdir -p fixture/.github/workflows
+          printf 'name: x\n' > fixture/.github/workflows/ci.yaml
+          printf 'version: 2\n' > fixture/.github/dependabot.yml
+
+      - uses: ./.github/actions/yaml-extension
+        with:
+          root: fixture
+
+      # A BLOCK scalar: `run: printf 'name: x\n'` inline is read as a mapping,
+      # because the value contains ": ". The first draft here did exactly that.
+      - name: a tree with one stray .yml
+        run: |
+          printf 'name: x\n' > fixture/stray.yml
+
+      # continue-on-error, then ASSERT the outcome: a negative case that merely
+      # runs proves nothing, and a gate nobody has watched fail is a hypothesis.
+      - uses: ./.github/actions/yaml-extension
+        id: stray
+        continue-on-error: true
+        with:
+          root: fixture
+
+      - name: the stray must have turned it RED
+        run: |
+          set -euo pipefail
+          outcome='${{ steps.stray.outcome }}'
+          if [ "$outcome" != "failure" ]; then
+            echo "::error::the gate reported '$outcome' over a tree containing stray.yml. A gate that cannot fail is not a gate."
+            exit 1
+          fi
+          echo "the gate failed on a stray .yml, as it must"
+
