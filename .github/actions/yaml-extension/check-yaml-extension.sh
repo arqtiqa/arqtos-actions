@@ -108,16 +108,23 @@ exempt() { # path
 # and this script is meant to be runnable by a developer as well as by CI. The
 # bash-4 form worked on the ubuntu runner and broke on the machine it was
 # written on, which is the wrong way round for a check anybody trusts.
+# ⚠️ COUNTED AS IT READS, into a plain integer. The first draft asked
+# ${#all[@]:-0}, which bash 3.2 tolerated and bash 5 rejects as a bad
+# substitution — so the census guard below errored on the runner and the check
+# PASSED over an empty tree. Two shells, two different ways to get this wrong,
+# so neither array length nor a default expansion is asked for at all.
 all=()
+total=0
 while IFS= read -r found; do
-	all+=("$found")
+	all[$total]="$found"
+	total=$((total + 1))
 done < <(cd "$root" && /usr/bin/find . \( -name '*.yml' -o -name '*.yaml' \) \
 	-not -path './.git/*' -type f | sed 's|^\./||' | LC_ALL=C sort)
 
 # ⚠️ A CENSUS, NOT A SEARCH. A tree with no YAML is one this check has said
 # nothing about, and reporting that as a pass is how a misconfigured root reads
 # as conformance.
-if [ "${#all[@]:-0}" -eq 0 ] || [ -z "${all[0]:-}" ]; then
+if [ "$total" -eq 0 ]; then
 	echo "REFUSING: no YAML file found under $root, so this check's silence means nothing." >&2
 	exit 2
 fi
@@ -143,4 +150,4 @@ if [ "${#stray[@]}" -ne 0 ]; then
 	exit 1
 fi
 
-echo "yamlext: ${#all[@]} YAML file(s) under $root, all .yaml except $spared declared exemption(s), against $entries rule(s)"
+echo "yamlext: $total YAML file(s) under $root, all .yaml except $spared declared exemption(s), against $entries rule(s)"
