@@ -1,4 +1,4 @@
-# ci-baseline.yml — the one declared source for shared CI action versions.
+# ci-baseline.yaml — the one declared source for shared CI action versions.
 #
 # Read by the ci-baseline gate, which fails a pull request pinning a governed
 # action off this manifest. A violation message cites this file by path, so its

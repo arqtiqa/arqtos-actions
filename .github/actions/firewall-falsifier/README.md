@@ -50,10 +50,10 @@ denylist is worse than no firewall, because it is trusted.
 
 ### ⚠️ The two actions are pinned differently, and that is deliberate
 
-The **gate** is `pin_style: commit-sha` in `ci-baseline.yml`. **This action is
+The **gate** is `pin_style: commit-sha` in `ci-baseline.yaml`. **This action is
 not** — it takes `@v1`, like every other shared action.
 
-That asymmetry was argued and settled (see `ci-baseline.yml`'s own note, which
+That asymmetry was argued and settled (see `ci-baseline.yaml`'s own note, which
 records the refused proposal so it is not re-opened from scratch). The short
 version: the criterion is not *"can it fail silently"* — go-fmt can too — but
 **whether the silence is recoverable**. The gate's is not: published content

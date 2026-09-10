@@ -66,7 +66,7 @@ def build(tmp_path: Path, workflow: str, *, manifest: str = MANIFEST,
         (root / ".github/ci-baseline-exceptions.yml").write_text(exceptions)
     if precommit is not None:
         (root / ".pre-commit-config.yaml").write_text(precommit)
-    mpath = tmp_path / "ci-baseline.yml"
+    mpath = tmp_path / "ci-baseline.yaml"
     mpath.write_text(manifest)
     return root, mpath
 
@@ -153,7 +153,7 @@ def test_off_baseline_pin_FAILS_and_names_the_expected_version(tmp_path, capsys)
     assert run(*build(tmp_path, wf)) == VIOLATION
     err = capsys.readouterr().err
     assert "expected @v7" in err                    # names the fix
-    assert "ci-baseline.yml" in err                 # names where the baseline lives
+    assert "ci-baseline.yaml" in err                 # names where the baseline lives
 
 
 def test_an_ungoverned_action_is_ignored(tmp_path):

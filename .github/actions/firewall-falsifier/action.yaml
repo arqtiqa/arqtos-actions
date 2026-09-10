@@ -74,7 +74,7 @@ runs:
         #
         # ⚠️ THAT REF IS THIS ACTION'S OWN, WHICH IS NOT NECESSARILY THE GATE'S.
         # This action takes `@v1` while the gate is SHA-pinned (see
-        # ci-baseline.yml for why the two are pinned differently, and the
+        # ci-baseline.yaml for why the two are pinned differently, and the
         # refused proposal to align them). So the scanner used here is v1's,
         # and the caller's gate may run a different build. Today they are
         # byte-identical across v1 and every consumer's pin; nothing enforces
