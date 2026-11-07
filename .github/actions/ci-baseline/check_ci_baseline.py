@@ -28,13 +28,34 @@ THE OVERRIDE IS NARROW IN BOTH DIRECTIONS. The firewall action must be pinned to
 a commit SHA and NOT to `@v1`; every other action must use its manifest pin and
 NOT a SHA. An exception that only ever widens is how a baseline decays into a
 suggestion — so violating it in the permissive direction is a violation too.
+
+ONE NARROW SHA EXCEPTION. A job that holds a secret worth stealing (a release
+App key) may need a governed action pinned to a commit SHA, because a moving tag
+is a supply-chain hole there. The exceptions file may carry an entry
+`kind: sha-pin` with action, workflow, job, sha, tag, why, expires. It permits a
+SHA for that one action, written in that one workflow file, and reachable from
+that one job and no other. The `uses:` values and job membership are read from the PARSED workflow (a quoted
+value, a flow-style step and a quoted `"uses":` key are seen like any other), so a
+quoted, anchored or tagged job key still counts as its own job, and a SHA line
+that a YAML alias makes reachable from a second job is refused. The baseline
+stays the single source of WHICH version: `tag` must equal the baseline pin, the
+line must carry a trailing `# <tag>` comment, and the SHA must be that tag's
+commit, resolved through the GitHub API (annotated tags dereferenced). If the
+tag cannot be resolved the check FAILS CLOSED, naming the reason; an
+unverifiable SHA is not a pin, it is an opaque string. The narrowing runs both
+ways: an entry that matches no SHA-pinned `uses:` line is a stale finding, and
+two entries for one (action, workflow, job) are a duplicate finding.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import re
 import sys
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
@@ -44,6 +65,8 @@ import yaml
 EXIT_OK, EXIT_VIOLATION, EXIT_MISCONFIGURED = 0, 1, 2
 
 # `uses: owner/repo[/path]@ref`, capturing the action identity and the ref.
+# The same shape for a parsed `uses:` scalar (quotes already removed by YAML).
+USES_VALUE_RE = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._/-]*?)@([A-Za-z0-9._-]+)$")
 USES_RE = re.compile(r"^\s*-?\s*uses:\s*([A-Za-z0-9][A-Za-z0-9._/-]*?)@([A-Za-z0-9._-]+)", re.M)
 # A 40-char lowercase hex string is a commit SHA; anything else is a tag/branch.
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -195,6 +218,90 @@ def load_manifest(path: Path) -> Manifest | int:
     return m
 
 
+# One `kind: sha-pin` exception, keyed by (action, workflow, job).
+SHA_FIELDS = ("action", "workflow", "job", "sha", "tag", "why", "expires")
+
+
+def resolve_tag_commit(action: str, tag: str) -> str:
+    """The commit a tag points at, via `repos/<owner>/<repo>/git/ref/tags/<tag>`,
+    dereferencing annotated tag objects. Raises RuntimeError with a named reason
+    on any failure: the caller turns that into a finding, never a pass."""
+    parts = action.split("/")
+    if len(parts) < 2:
+        raise RuntimeError(f"{action!r} is not owner/repo[/path]")
+    repo = "/".join(parts[:2])
+    headers = {"Accept": "application/vnd.github+json", "User-Agent": "arqtos-ci-baseline"}
+    tok = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if tok:
+        headers["Authorization"] = f"Bearer {tok}"
+
+    def get(url: str) -> dict:
+        try:
+            with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=20) as r:
+                data = json.load(r)
+        except Exception as e:  # HTTPError, URLError, IncompleteRead, bad JSON: all the same verdict
+            raise RuntimeError(f"GitHub API request {url} failed: {type(e).__name__}: {e}") from e
+        if not isinstance(data, dict):
+            raise RuntimeError(f"GitHub API request {url} returned {type(data).__name__}, not an object")
+        return data
+
+    obj = get(f"https://api.github.com/repos/{repo}/git/ref/tags/{tag}").get("object") or {}
+    for _ in range(5):
+        if obj.get("type") == "commit" and SHA_RE.match(str(obj.get("sha", ""))):
+            return obj["sha"]
+        if obj.get("type") != "tag" or not obj.get("url"):
+            break
+        obj = get(obj["url"]).get("object") or {}
+    raise RuntimeError(f"tag {tag} of {repo} did not resolve to a commit")
+
+
+def _parsed_uses(text: str) -> dict[int, tuple[str, set[str]]] | None:
+    """Every `uses:` value in the PARSED document: {1-based line: (value, jobs)}.
+
+    `jobs` is the set of job names that can reach that node. A node reachable
+    through a YAML alias from two jobs lists both, which is the point. Job names
+    come from the key's scalar value, so quoting, anchors and tags do not change
+    them. Reading the parse (not a line regex) is what sees a quoted value, a
+    flow-style step `{uses: ...}` and a quoted `"uses":` key. Returns None when
+    the text does not parse, so the caller can fail closed rather than guess."""
+    try:
+        root = yaml.compose(text)
+    except yaml.YAMLError:
+        return None
+    out: dict[int, tuple[str, set[str]]] = {}
+
+    def walk(start: yaml.Node, job: str | None) -> None:
+        seen: set[int] = set()
+        stack = [start]
+        while stack:
+            node = stack.pop()
+            if id(node) in seen:
+                continue
+            seen.add(id(node))
+            if isinstance(node, yaml.MappingNode):
+                for ck, cv in node.value:
+                    if (getattr(ck, "value", None) == "uses" and isinstance(cv, yaml.ScalarNode)
+                            and isinstance(cv.value, str)):
+                        _, jobs = out.setdefault(cv.start_mark.line + 1, (cv.value, set()))
+                        if job is not None:
+                            jobs.add(job)
+                    stack += [ck, cv]
+            elif isinstance(node, yaml.SequenceNode):
+                stack += node.value
+
+    if root is None:
+        return out
+    walk(root, None)
+    if isinstance(root, yaml.MappingNode):
+        for k, v in root.value:
+            if getattr(k, "value", None) != "jobs" or not isinstance(v, yaml.MappingNode):
+                continue
+            for jk, jv in v.value:
+                if isinstance(getattr(jk, "value", None), str):
+                    walk(jv, jk.value)
+    return out
+
+
 def load_exceptions(root: Path, manifest_raw: dict) -> tuple[dict[str, str], list[Finding]]:
     """Consumer-recorded deviations. ⚠️ `expires` is REQUIRED and enforced —
     an exception with no date is a permanent carve-out wearing the costume of a
@@ -211,6 +318,9 @@ def load_exceptions(root: Path, manifest_raw: dict) -> tuple[dict[str, str], lis
     out: dict[str, str] = {}
     problems: list[Finding] = []
     for ex in data.get("exceptions") or []:
+        if ex.get("kind") == "sha-pin":
+            problems += _load_sha_pin(p, ex, manifest_raw)
+            continue
         act, pin, why, exp = ex.get("action"), ex.get("pin"), ex.get("why"), ex.get("expires")
         if not (act and pin and why and exp):
             problems.append(Finding(
@@ -234,6 +344,101 @@ def load_exceptions(root: Path, manifest_raw: dict) -> tuple[dict[str, str], lis
             continue
         out[act] = str(pin)
     return out, problems
+
+
+def _load_sha_pin(p: Path, ex: dict, manifest_raw: dict) -> list[Finding]:
+    """Validate one `kind: sha-pin` entry and register it in SHA_EXCEPTIONS.
+    Returns problems; a problem entry registers nothing."""
+    where = f"{p}: {ex.get('action') or '<no action>'}"
+    missing = [f for f in SHA_FIELDS if not ex.get(f)]
+    if missing:
+        return [Finding("sha-pin exception is incomplete", where,
+                        f"missing {', '.join(missing)}; a sha-pin needs {', '.join(SHA_FIELDS)}",
+                        "add the missing fields. The workflow and job are what keep it narrow; "
+                        "`why` and `expires` make it a decision rather than a hole.")]
+    act, tag, sha = str(ex["action"]), str(ex["tag"]), str(ex["sha"])
+    if not SHA_RE.match(sha):
+        return [Finding("sha-pin exception has a malformed `sha`", where,
+                        f"{sha!r} is not a 40-char lowercase hex commit SHA", "use the full SHA.")]
+    spec = (manifest_raw.get("actions") or {}).get(act)
+    if not isinstance(spec, dict) or "pin" not in spec:
+        return [Finding("sha-pin exception names an ungoverned action", where,
+                        f"{act} has no pin in the baseline manifest, so there is no version to hold it to",
+                        "a sha-pin only restates a governed action's baseline version as a commit.")]
+    if tag != str(spec["pin"]):
+        return [Finding("sha-pin exception tag differs from the baseline pin", where,
+                        f"tag {tag}, baseline pin {spec['pin']}",
+                        f"set `tag: {spec['pin']}`. The baseline stays the single source of which "
+                        f"version runs; the exception only changes how it is spelled.")]
+    try:
+        when = date.fromisoformat(str(ex["expires"]))
+    except ValueError:
+        return [Finding("sha-pin exception has an unreadable `expires`", where,
+                        f"{ex['expires']!r} is not an ISO date", "use YYYY-MM-DD.")]
+    if when < date.today():
+        return [Finding("sha-pin exception has EXPIRED", where, f"expired {when.isoformat()}",
+                        "renew it with a fresh reason, or return the pin to baseline. ⚠️ An expired "
+                        "exception that keeps working is not an expiry date.")]
+    key = (act, str(ex["workflow"]), str(ex["job"]))
+    if key in SHA_EXCEPTIONS:
+        return [Finding("duplicate sha-pin exception", where,
+                        f"{act} in {key[1]} job {key[2]} is already recorded; the second entry would silently replace the first",
+                        "keep one entry per (action, workflow, job).")]
+    SHA_EXCEPTIONS[key] = (sha, tag)
+    return []
+
+
+# Registered by load_exceptions for the current run: (action, workflow, job) -> (sha, tag).
+SHA_EXCEPTIONS: dict[tuple[str, str, str], tuple[str, str]] = {}
+# The keys a SHA-pinned `uses:` line was judged against during this run.
+SHA_USED: set[tuple[str, str, str]] = set()
+
+
+def _check_sha_exception(key: str, rel: str, line_text: str, ref: str, where: str,
+                         jobs: set[str], parse_failed: bool = False) -> Finding | None | bool:
+    """None = the SHA is permitted here. False = no exception covers this spot
+    (the caller reports the ordinary refusal). A Finding = covered but wrong."""
+    if parse_failed:
+        covering = [k for k in SHA_EXCEPTIONS if k[0] == key and k[1] == rel]
+        if not covering:
+            return False
+        SHA_USED.update(covering)
+        return Finding("workflow does not parse - sha-pin cannot be judged, failing closed", where,
+                       f"{rel} is not valid YAML, so which job reaches {key}@{ref[:12]}… is unknown",
+                       "fix the workflow's YAML; a SHA is only allowed where its job is known.")
+    named = sorted(j for j in jobs if (key, rel, j) in SHA_EXCEPTIONS)
+    if not named:
+        return False
+    for j in named:
+        SHA_USED.add((key, rel, j))
+    if len(jobs) != 1:
+        return Finding("sha-pin is reachable from more than one job", where,
+                       f"{key}@{ref[:12]}… is reachable from jobs {', '.join(sorted(jobs))} "
+                       f"(a YAML alias or anchor shares it); the exception names only {', '.join(named)}",
+                       "give each job its own steps, or drop the sharing; the SHA is allowed in one job only.")
+    sha, tag = SHA_EXCEPTIONS[(key, rel, named[0])]
+    if ref != sha:
+        return Finding("sha-pin differs from the recorded exception", where,
+                       f"{key}@{ref[:12]}… but the exception records {sha[:12]}…",
+                       "use the recorded SHA, or update the exception and its tag together.")
+    if not re.search(rf"#\s*{re.escape(tag)}\s*$", line_text):
+        return Finding("sha-pin needs a trailing version comment", where,
+                       f"{key}@{sha[:12]}… carries no `# {tag}` comment",
+                       f"annotate the line: `uses: {key}@{sha}  # {tag}`.")
+    try:
+        got = resolve_tag_commit(key, tag)
+    except RuntimeError as e:
+        return Finding("cannot verify the SHA against its tag - failing closed", where,
+                       f"{e}. An unverifiable SHA is an opaque string, not a pin of {key}@{tag}.",
+                       "restore network or token access to the GitHub API and re-run.")
+    if got != sha:
+        return Finding("sha-pin is not the commit of its tag", where,
+                       f"{key}@{tag} is now {got[:12]}…, the line pins {sha[:12]}…",
+                       f"the upstream tag has moved (or been moved). Review the upstream change from "
+                       f"{sha} to {got} BEFORE adopting it: a moved tag is also what a hijack looks "
+                       f"like, and this pin exists to defend against that. Re-pin only after review, "
+                       f"in the exceptions file and the workflow together.")
+    return None
 
 
 def scan_repo(root: Path, m: Manifest, exceptions: dict[str, str]) -> list[Finding]:
@@ -320,9 +525,22 @@ def scan_repo(root: Path, m: Manifest, exceptions: dict[str, str]) -> list[Findi
                         f"`push:` trigger entirely if `pull_request` coverage is enough.",
                     ))
 
+        # ⚠️ The governed `uses:` set is the UNION of the parse and the line
+        # regex. The parse sees what GitHub runs (a quoted value, a flow step
+        # `{uses: ...}`, a quoted `"uses":` key); the regex still catches a line
+        # in a file that does not parse, or in a non-YAML surface. Line numbers
+        # come from the parse marks, or from the ACTION group for the regex:
+        # USES_RE opens with `^\s*`, which under re.M swallows preceding blank
+        # lines, so mt.start() can sit lines above the `uses:` it matched.
+        parsed = _parsed_uses(text)
+        entries: dict[int, tuple[str, str]] = {}
+        for ln, (val, _) in sorted((parsed or {}).items()):
+            mv = USES_VALUE_RE.match(val.strip())
+            if mv:
+                entries[ln] = (mv.group(1), mv.group(2))
         for mt in USES_RE.finditer(text):
-            action, ref = mt.group(1), mt.group(2)
-            line = text[: mt.start()].count("\n") + 1
+            entries.setdefault(text[: mt.start(1)].count("\n") + 1, (mt.group(1), mt.group(2)))
+        for line, (action, ref) in sorted(entries.items()):
             where = f"{rel}:{line}"
 
             if action in m.sha_pinned:
@@ -362,6 +580,16 @@ def scan_repo(root: Path, m: Manifest, exceptions: dict[str, str]) -> list[Findi
                 continue
 
             if SHA_RE.match(ref):
+                if is_consumer and rel.startswith(".github/workflows/"):
+                    line_text = text.split("\n")[line - 1]
+                    jobs = parsed[line][1] if parsed is not None and line in parsed else set()
+                    verdict = _check_sha_exception(
+                        key, rel, line_text, ref, where, jobs, parse_failed=parsed is None)
+                    if verdict is None:
+                        continue
+                    if isinstance(verdict, Finding):
+                        findings.append(verdict)
+                        continue
                 findings.append(Finding(
                     "this action must use the baseline pin, not a commit SHA",
                     where,
@@ -383,6 +611,13 @@ def scan_repo(root: Path, m: Manifest, exceptions: dict[str, str]) -> list[Findi
                     f"exception in the exceptions file with a reason and an `expires` date.",
                 ))
             seen.setdefault(key, {}).setdefault(ref, []).append(where)
+
+    for (act, wf, job) in sorted(SHA_EXCEPTIONS.keys() - SHA_USED):
+        findings.append(Finding(
+            "sha-pin exception matches no SHA-pinned uses: line", f"{act} in {wf} job {job}",
+            "the exception permits a SHA but no `uses:` line in that job carries one, so it is stale "
+            "(or the workflow, job or action was renamed)",
+            "delete the exception, or restore the SHA pin it describes."))
 
     for action, refs in seen.items():
         if len(refs) > 1:
@@ -410,6 +645,8 @@ def run(argv: list[str]) -> int:
         return m
 
     raw = yaml.safe_load(mpath.read_text())
+    SHA_EXCEPTIONS.clear()
+    SHA_USED.clear()
     exceptions, ex_problems = load_exceptions(root, raw)
     findings = ex_problems + scan_repo(root, m, exceptions)
 

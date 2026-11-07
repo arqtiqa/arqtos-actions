@@ -43,6 +43,10 @@ runs:
         INPUT_MANIFEST: ${{ inputs.manifest }}
         INPUT_ROOT: ${{ inputs.root }}
         ACTION_PATH: ${{ github.action_path }}
+        # The job's own `github.token`, used to resolve a sha-pin exception's
+        # tag. The script only makes GET requests to api.github.com; without a
+        # token the check fails closed if the unauthenticated API is rate-limited.
+        GITHUB_TOKEN: ${{ github.token }}
       run: |
         set -euo pipefail
         manifest="${INPUT_MANIFEST:-$ACTION_PATH/../../../ci-baseline.yaml}"
