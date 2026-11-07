@@ -499,3 +499,12 @@ def test_a_different_sha_than_the_recorded_one_is_refused(tmp_path, tag_is, caps
     wf = WF_SHA.replace(SHA2, "d" * 40)
     assert run(*sha_build(tmp_path, {PROMOTE: wf}, sha_exc())) == VIOLATION
     assert "differs from the recorded exception" in capsys.readouterr().err
+
+
+def test_a_sha_pin_after_a_blank_line_is_still_judged_on_its_own_line(tmp_path, tag_is):
+    """⚠️ USES_RE's leading `^\\s*` swallows blank lines; the comment and job must
+    be read from the `uses:` line itself, not the line the match began on."""
+    tag_is(SHA2)
+    wf = WF_SHA.replace("    steps:\n      - uses: actions/checkout@" + SHA2,
+                        "    steps:\n      - name: x\n        run: echo\n\n      - uses: actions/checkout@" + SHA2, 1)
+    assert run(*sha_build(tmp_path, {PROMOTE: wf}, sha_exc())) == OK

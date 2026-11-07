@@ -463,7 +463,10 @@ def scan_repo(root: Path, m: Manifest, exceptions: dict[str, str]) -> list[Findi
 
         for mt in USES_RE.finditer(text):
             action, ref = mt.group(1), mt.group(2)
-            line = text[: mt.start()].count("\n") + 1
+            # ⚠️ Counted from the ACTION, not the match: USES_RE opens with `^\s*`,
+            # which under re.M swallows preceding blank lines, so mt.start() can sit
+            # lines above the `uses:` it matched and misname both the line and the job.
+            line = text[: mt.start(1)].count("\n") + 1
             where = f"{rel}:{line}"
 
             if action in m.sha_pinned:
