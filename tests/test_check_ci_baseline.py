@@ -508,3 +508,175 @@ def test_a_sha_pin_after_a_blank_line_is_still_judged_on_its_own_line(tmp_path, 
     wf = WF_SHA.replace("    steps:\n      - uses: actions/checkout@" + SHA2,
                         "    steps:\n      - name: x\n        run: echo\n\n      - uses: actions/checkout@" + SHA2, 1)
     assert run(*sha_build(tmp_path, {PROMOTE: wf}, sha_exc())) == OK
+
+
+# --- ⚠️ job membership comes from the PARSED workflow (round 2, A1) -----------
+
+def _with_evil(key_line: str) -> str:
+    return WF_SHA + f"  {key_line}\n    steps:\n      - uses: actions/checkout@{SHA2}  # v7\n"
+
+
+@pytest.mark.parametrize("key_line", ['"evil":', "'evil':", "evil: &e", "evil: !!map", "? evil\n  :"])
+def test_a_sha_pin_under_a_differently_spelled_job_key_is_refused(tmp_path, tag_is, capsys, key_line):
+    tag_is(SHA2)
+    wf = _with_evil(key_line)
+    assert run(*sha_build(tmp_path, {PROMOTE: wf}, sha_exc())) == VIOLATION
+    assert "not a commit SHA" in capsys.readouterr().err
+
+
+def test_a_sha_pin_reachable_through_a_yaml_alias_from_a_second_job_is_refused(tmp_path, tag_is, capsys):
+    tag_is(SHA2)
+    wf = f"""
+jobs:
+  promote:
+    steps: &s
+      - uses: actions/checkout@{SHA2}  # v7
+  evil:
+    steps: *s
+"""
+    assert run(*sha_build(tmp_path, {PROMOTE: wf}, sha_exc())) == VIOLATION
+    assert "more than one job" in capsys.readouterr().err
+
+
+def test_a_quoted_named_job_key_is_still_the_named_job(tmp_path, tag_is):
+    """The parse reads the key's value, so quoting the excepted job's own key
+    must not lock it out."""
+    tag_is(SHA2)
+    wf = WF_SHA.replace("  promote:", '  "promote":')
+    assert run(*sha_build(tmp_path, {PROMOTE: wf}, sha_exc())) == OK
+
+
+# --- round 2, A2/A3: resolve_tag_commit itself, urlopen faked -----------------
+
+import http.client
+import io
+import json as _json
+import urllib.error
+
+C1, C2, T1, T2 = "1" * 40, "2" * 40, "3" * 40, "4" * 40
+REF = "https://api.github.com/repos/actions/checkout/git/ref/tags/v7"
+
+
+class _Resp(io.BytesIO):
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def fake_api(monkeypatch, routes: dict, seen: list | None = None):
+    def urlopen(req, timeout=None):
+        if seen is not None:
+            seen.append(req)
+        r = routes[req.full_url]
+        if isinstance(r, BaseException):
+            raise r
+        if callable(r):
+            return r()
+        return _Resp(_json.dumps(r).encode())
+    monkeypatch.setattr(gate.urllib.request, "urlopen", urlopen)
+
+
+def obj(t, sha, url=None):
+    return {"object": {"type": t, "sha": sha, **({"url": url} if url else {})}}
+
+
+def test_a_lightweight_tag_resolves_to_its_commit(monkeypatch):
+    seen: list = []
+    monkeypatch.setenv("GITHUB_TOKEN", "tok")
+    fake_api(monkeypatch, {REF: obj("commit", C1)}, seen)
+    assert gate.resolve_tag_commit("actions/checkout", "v7") == C1
+    assert seen[0].full_url == REF, "the exact-match git/ref (singular) endpoint"
+    assert seen[0].get_header("Authorization") == "Bearer tok"
+
+
+def test_a_subpath_action_resolves_against_its_repo(monkeypatch):
+    fake_api(monkeypatch, {"https://api.github.com/repos/o/r/git/ref/tags/v1": obj("commit", C1)})
+    assert gate.resolve_tag_commit("o/r/.github/actions/x", "v1") == C1
+
+
+def test_an_annotated_tag_is_dereferenced_to_the_commit(monkeypatch):
+    """⚠️ M10: counting the tag OBJECT as the commit pins the wrong SHA."""
+    tu = "https://api.github.com/repos/actions/checkout/git/tags/" + T1
+    fake_api(monkeypatch, {REF: obj("tag", T1, tu), tu: obj("commit", C2)})
+    assert gate.resolve_tag_commit("actions/checkout", "v7") == C2
+
+
+def test_a_tag_pointing_to_a_tag_is_followed_to_the_commit(monkeypatch):
+    t1 = "https://api.github.com/repos/actions/checkout/git/tags/" + T1
+    t2 = "https://api.github.com/repos/actions/checkout/git/tags/" + T2
+    fake_api(monkeypatch, {REF: obj("tag", T1, t1), t1: obj("tag", T2, t2), t2: obj("commit", C2)})
+    assert gate.resolve_tag_commit("actions/checkout", "v7") == C2
+
+
+def test_a_tag_chain_that_never_reaches_a_commit_is_an_error(monkeypatch):
+    tu = "https://api.github.com/repos/actions/checkout/git/tags/" + T1
+    fake_api(monkeypatch, {REF: obj("tag", T1, tu), tu: obj("tag", T1, tu)})
+    with pytest.raises(RuntimeError, match="did not resolve to a commit"):
+        gate.resolve_tag_commit("actions/checkout", "v7")
+
+
+def _http(code):
+    return urllib.error.HTTPError(REF, code, "x", {}, None)
+
+
+@pytest.mark.parametrize("exc,needle", [
+    (_http(404), "404"),
+    (_http(401), "401"),
+    (urllib.error.URLError("no route"), "no route"),
+    (http.client.IncompleteRead(b"ab"), "IncompleteRead"),
+    (TimeoutError("slow"), "slow"),
+])
+def test_an_api_failure_is_a_named_error(monkeypatch, exc, needle):
+    fake_api(monkeypatch, {REF: exc})
+    with pytest.raises(RuntimeError, match=needle):
+        gate.resolve_tag_commit("actions/checkout", "v7")
+
+
+def test_a_non_object_response_is_a_named_error(monkeypatch):
+    fake_api(monkeypatch, {REF: [obj("commit", C1)]})
+    with pytest.raises(RuntimeError, match="list, not an object"):
+        gate.resolve_tag_commit("actions/checkout", "v7")
+
+
+def test_a_malformed_commit_sha_is_an_error(monkeypatch):
+    fake_api(monkeypatch, {REF: obj("commit", "nothex")})
+    with pytest.raises(RuntimeError):
+        gate.resolve_tag_commit("actions/checkout", "v7")
+
+
+def test_an_incomplete_read_through_the_gate_is_a_finding_not_a_traceback(tmp_path, monkeypatch, capsys):
+    fake_api(monkeypatch, {REF: http.client.IncompleteRead(b"x")})
+    assert run(*sha_build(tmp_path, {PROMOTE: WF_SHA}, sha_exc())) == VIOLATION
+    err = capsys.readouterr().err
+    assert "failing closed" in err and "IncompleteRead" in err
+
+
+# --- round 2, A4/A5: narrow in both directions, and a tag move is reviewed ----
+
+def test_a_sha_exception_matching_no_sha_line_is_stale(tmp_path, tag_is, capsys):
+    tag_is(SHA2)
+    wf = WF_SHA.replace(f"@{SHA2}  # v7", "@v7")
+    assert run(*sha_build(tmp_path, {PROMOTE: wf}, sha_exc())) == VIOLATION
+    assert "matches no SHA-pinned" in capsys.readouterr().err
+
+
+def test_a_sha_exception_for_a_missing_workflow_is_stale(tmp_path, tag_is, capsys):
+    tag_is(SHA2)
+    assert run(*sha_build(tmp_path, {PROMOTE: WF_SHA}, sha_exc() + sha_exc(workflow=".github/workflows/gone.yml")[len("exceptions:\n"):])) == VIOLATION
+    assert "matches no SHA-pinned" in capsys.readouterr().err
+
+
+def test_duplicate_sha_exceptions_are_a_finding(tmp_path, tag_is, capsys):
+    tag_is(SHA2)
+    ex = sha_exc() + sha_exc(why="again")[len("exceptions:\n"):]
+    assert run(*sha_build(tmp_path, {PROMOTE: WF_SHA}, ex)) == VIOLATION
+    assert "duplicate sha-pin exception" in capsys.readouterr().err
+
+
+def test_a_moved_tag_tells_the_operator_to_review_before_repinning(tmp_path, tag_is, capsys):
+    tag_is("c" * 40)
+    assert run(*sha_build(tmp_path, {PROMOTE: WF_SHA}, sha_exc())) == VIOLATION
+    err = capsys.readouterr().err
+    assert "BEFORE adopting" in err and "hijack" in err and SHA2 in err and "c" * 40 in err

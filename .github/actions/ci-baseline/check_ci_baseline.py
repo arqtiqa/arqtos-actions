@@ -33,12 +33,17 @@ ONE NARROW SHA EXCEPTION. A job that holds a secret worth stealing (a release
 App key) may need a governed action pinned to a commit SHA, because a moving tag
 is a supply-chain hole there. The exceptions file may carry an entry
 `kind: sha-pin` with action, workflow, job, sha, tag, why, expires. It permits a
-SHA for that one action in that one job of that one workflow file, and nowhere
-else. The baseline stays the single source of WHICH version: `tag` must equal
-the baseline pin, the line must carry a trailing `# <tag>` comment, and the SHA
-must be that tag's commit, resolved through the GitHub API (annotated tags
-dereferenced). If the tag cannot be resolved the check FAILS CLOSED, naming the
-reason; an unverifiable SHA is not a pin, it is an opaque string.
+SHA for that one action, written in that one workflow file, and reachable from
+that one job and no other. Job membership is read from the PARSED workflow, so a
+quoted, anchored or tagged job key still counts as its own job, and a SHA line
+that a YAML alias makes reachable from a second job is refused. The baseline
+stays the single source of WHICH version: `tag` must equal the baseline pin, the
+line must carry a trailing `# <tag>` comment, and the SHA must be that tag's
+commit, resolved through the GitHub API (annotated tags dereferenced). If the
+tag cannot be resolved the check FAILS CLOSED, naming the reason; an
+unverifiable SHA is not a pin, it is an opaque string. The narrowing runs both
+ways: an entry that matches no SHA-pinned `uses:` line is a stale finding, and
+two entries for one (action, workflow, job) are a duplicate finding.
 """
 
 from __future__ import annotations
@@ -230,9 +235,12 @@ def resolve_tag_commit(action: str, tag: str) -> str:
     def get(url: str) -> dict:
         try:
             with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=20) as r:
-                return json.load(r)
-        except (urllib.error.URLError, OSError, ValueError) as e:
-            raise RuntimeError(f"GitHub API request {url} failed: {e}") from e
+                data = json.load(r)
+        except Exception as e:  # HTTPError, URLError, IncompleteRead, bad JSON: all the same verdict
+            raise RuntimeError(f"GitHub API request {url} failed: {type(e).__name__}: {e}") from e
+        if not isinstance(data, dict):
+            raise RuntimeError(f"GitHub API request {url} returned {type(data).__name__}, not an object")
+        return data
 
     obj = get(f"https://api.github.com/repos/{repo}/git/ref/tags/{tag}").get("object") or {}
     for _ in range(5):
@@ -244,23 +252,40 @@ def resolve_tag_commit(action: str, tag: str) -> str:
     raise RuntimeError(f"tag {tag} of {repo} did not resolve to a commit")
 
 
-def _job_of_line(lines: list[str], lineno: int) -> str | None:
-    """The job a 1-based line of a workflow belongs to, by indentation: the
-    nearest preceding key at the first indent level under `jobs:`."""
-    jobs_at = next((i for i, ln in enumerate(lines) if re.match(r"^jobs:\s*(#.*)?$", ln)), None)
-    if jobs_at is None or lineno - 1 <= jobs_at:
-        return None
-    indent = None
-    current = None
-    for ln in lines[jobs_at + 1: lineno]:
-        mt = re.match(r"^(\s+)([A-Za-z0-9_-]+):\s*(#.*)?$", ln)
-        if not mt:
+def _jobs_reaching_uses(text: str) -> dict[int, set[str]]:
+    """Map each `uses:` value's 1-based line to the set of job names that can
+    reach it, from the PARSED workflow. A node reachable through a YAML alias
+    from two jobs appears under both, which is the point. Job names come from
+    the key's scalar value, so quoting, anchors and tags do not change them."""
+    out: dict[int, set[str]] = {}
+    try:
+        root = yaml.compose(text)
+    except yaml.YAMLError:
+        return out
+    if not isinstance(root, yaml.MappingNode):
+        return out
+    for k, v in root.value:
+        if getattr(k, "value", None) != "jobs" or not isinstance(v, yaml.MappingNode):
             continue
-        if indent is None:
-            indent = len(mt.group(1))
-        if len(mt.group(1)) == indent:
-            current = mt.group(2)
-    return current
+        for jk, jv in v.value:
+            job = getattr(jk, "value", None)
+            if not isinstance(job, str):
+                continue
+            seen: set[int] = set()
+            stack = [jv]
+            while stack:
+                node = stack.pop()
+                if id(node) in seen:
+                    continue
+                seen.add(id(node))
+                if isinstance(node, yaml.MappingNode):
+                    for ck, cv in node.value:
+                        if getattr(ck, "value", None) == "uses" and isinstance(cv, yaml.ScalarNode):
+                            out.setdefault(cv.start_mark.line + 1, set()).add(job)
+                        stack += [ck, cv]
+                elif isinstance(node, yaml.SequenceNode):
+                    stack += node.value
+    return out
 
 
 def load_exceptions(root: Path, manifest_raw: dict) -> tuple[dict[str, str], list[Finding]]:
@@ -340,22 +365,36 @@ def _load_sha_pin(p: Path, ex: dict, manifest_raw: dict) -> list[Finding]:
         return [Finding("sha-pin exception has EXPIRED", where, f"expired {when.isoformat()}",
                         "renew it with a fresh reason, or return the pin to baseline. ⚠️ An expired "
                         "exception that keeps working is not an expiry date.")]
-    SHA_EXCEPTIONS[(act, str(ex["workflow"]), str(ex["job"]))] = (sha, tag)
+    key = (act, str(ex["workflow"]), str(ex["job"]))
+    if key in SHA_EXCEPTIONS:
+        return [Finding("duplicate sha-pin exception", where,
+                        f"{act} in {key[1]} job {key[2]} is already recorded; the second entry would silently replace the first",
+                        "keep one entry per (action, workflow, job).")]
+    SHA_EXCEPTIONS[key] = (sha, tag)
     return []
 
 
 # Registered by load_exceptions for the current run: (action, workflow, job) -> (sha, tag).
 SHA_EXCEPTIONS: dict[tuple[str, str, str], tuple[str, str]] = {}
+# The keys a SHA-pinned `uses:` line was judged against during this run.
+SHA_USED: set[tuple[str, str, str]] = set()
 
 
 def _check_sha_exception(key: str, rel: str, line_text: str, ref: str, where: str,
-                         job: str | None) -> Finding | None | bool:
+                         jobs: set[str]) -> Finding | None | bool:
     """None = the SHA is permitted here. False = no exception covers this spot
     (the caller reports the ordinary refusal). A Finding = covered but wrong."""
-    entry = SHA_EXCEPTIONS.get((key, rel, job or ""))
-    if entry is None:
+    named = sorted(j for j in jobs if (key, rel, j) in SHA_EXCEPTIONS)
+    if not named:
         return False
-    sha, tag = entry
+    for j in named:
+        SHA_USED.add((key, rel, j))
+    if len(jobs) != 1:
+        return Finding("sha-pin is reachable from more than one job", where,
+                       f"{key}@{ref[:12]}… is reachable from jobs {', '.join(sorted(jobs))} "
+                       f"(a YAML alias or anchor shares it); the exception names only {', '.join(named)}",
+                       "give each job its own steps, or drop the sharing; the SHA is allowed in one job only.")
+    sha, tag = SHA_EXCEPTIONS[(key, rel, named[0])]
     if ref != sha:
         return Finding("sha-pin differs from the recorded exception", where,
                        f"{key}@{ref[:12]}… but the exception records {sha[:12]}…",
@@ -372,8 +411,11 @@ def _check_sha_exception(key: str, rel: str, line_text: str, ref: str, where: st
                        "restore network or token access to the GitHub API and re-run.")
     if got != sha:
         return Finding("sha-pin is not the commit of its tag", where,
-                       f"{key}@{tag} is {got[:12]}…, the line pins {sha[:12]}…",
-                       f"pin `{key}@{got}  # {tag}`, or move `tag` and the baseline together.")
+                       f"{key}@{tag} is now {got[:12]}…, the line pins {sha[:12]}…",
+                       f"the upstream tag has moved (or been moved). Review the upstream change from "
+                       f"{sha} to {got} BEFORE adopting it: a moved tag is also what a hijack looks "
+                       f"like, and this pin exists to defend against that. Re-pin only after review, "
+                       f"in the exceptions file and the workflow together.")
     return None
 
 
@@ -461,6 +503,7 @@ def scan_repo(root: Path, m: Manifest, exceptions: dict[str, str]) -> list[Findi
                         f"`push:` trigger entirely if `pull_request` coverage is enough.",
                     ))
 
+        jobs_by_line: dict[int, set[str]] | None = None
         for mt in USES_RE.finditer(text):
             action, ref = mt.group(1), mt.group(2)
             # ⚠️ Counted from the ACTION, not the match: USES_RE opens with `^\s*`,
@@ -508,8 +551,10 @@ def scan_repo(root: Path, m: Manifest, exceptions: dict[str, str]) -> list[Findi
             if SHA_RE.match(ref):
                 if is_consumer and rel.startswith(".github/workflows/"):
                     line_text = text.split("\n")[line - 1]
+                    if jobs_by_line is None:
+                        jobs_by_line = _jobs_reaching_uses(text)
                     verdict = _check_sha_exception(
-                        key, rel, line_text, ref, where, _job_of_line(text.split("\n"), line))
+                        key, rel, line_text, ref, where, jobs_by_line.get(line, set()))
                     if verdict is None:
                         continue
                     if isinstance(verdict, Finding):
@@ -536,6 +581,13 @@ def scan_repo(root: Path, m: Manifest, exceptions: dict[str, str]) -> list[Findi
                     f"exception in the exceptions file with a reason and an `expires` date.",
                 ))
             seen.setdefault(key, {}).setdefault(ref, []).append(where)
+
+    for (act, wf, job) in sorted(SHA_EXCEPTIONS.keys() - SHA_USED):
+        findings.append(Finding(
+            "sha-pin exception matches no SHA-pinned uses: line", f"{act} in {wf} job {job}",
+            "the exception permits a SHA but no `uses:` line in that job carries one, so it is stale "
+            "(or the workflow, job or action was renamed)",
+            "delete the exception, or restore the SHA pin it describes."))
 
     for action, refs in seen.items():
         if len(refs) > 1:
@@ -564,6 +616,7 @@ def run(argv: list[str]) -> int:
 
     raw = yaml.safe_load(mpath.read_text())
     SHA_EXCEPTIONS.clear()
+    SHA_USED.clear()
     exceptions, ex_problems = load_exceptions(root, raw)
     findings = ex_problems + scan_repo(root, m, exceptions)
 
