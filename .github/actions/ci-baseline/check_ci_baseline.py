@@ -34,7 +34,8 @@ App key) may need a governed action pinned to a commit SHA, because a moving tag
 is a supply-chain hole there. The exceptions file may carry an entry
 `kind: sha-pin` with action, workflow, job, sha, tag, why, expires. It permits a
 SHA for that one action, written in that one workflow file, and reachable from
-that one job and no other. Job membership is read from the PARSED workflow, so a
+that one job and no other. The `uses:` values and job membership are read from the PARSED workflow (a quoted
+value, a flow-style step and a quoted `"uses":` key are seen like any other), so a
 quoted, anchored or tagged job key still counts as its own job, and a SHA line
 that a YAML alias makes reachable from a second job is refused. The baseline
 stays the single source of WHICH version: `tag` must equal the baseline pin, the
@@ -64,6 +65,8 @@ import yaml
 EXIT_OK, EXIT_VIOLATION, EXIT_MISCONFIGURED = 0, 1, 2
 
 # `uses: owner/repo[/path]@ref`, capturing the action identity and the ref.
+# The same shape for a parsed `uses:` scalar (quotes already removed by YAML).
+USES_VALUE_RE = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._/-]*?)@([A-Za-z0-9._-]+)$")
 USES_RE = re.compile(r"^\s*-?\s*uses:\s*([A-Za-z0-9][A-Za-z0-9._/-]*?)@([A-Za-z0-9._-]+)", re.M)
 # A 40-char lowercase hex string is a commit SHA; anything else is a tag/branch.
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -252,39 +255,50 @@ def resolve_tag_commit(action: str, tag: str) -> str:
     raise RuntimeError(f"tag {tag} of {repo} did not resolve to a commit")
 
 
-def _jobs_reaching_uses(text: str) -> dict[int, set[str]]:
-    """Map each `uses:` value's 1-based line to the set of job names that can
-    reach it, from the PARSED workflow. A node reachable through a YAML alias
-    from two jobs appears under both, which is the point. Job names come from
-    the key's scalar value, so quoting, anchors and tags do not change them."""
-    out: dict[int, set[str]] = {}
+def _parsed_uses(text: str) -> dict[int, tuple[str, set[str]]] | None:
+    """Every `uses:` value in the PARSED document: {1-based line: (value, jobs)}.
+
+    `jobs` is the set of job names that can reach that node. A node reachable
+    through a YAML alias from two jobs lists both, which is the point. Job names
+    come from the key's scalar value, so quoting, anchors and tags do not change
+    them. Reading the parse (not a line regex) is what sees a quoted value, a
+    flow-style step `{uses: ...}` and a quoted `"uses":` key. Returns None when
+    the text does not parse, so the caller can fail closed rather than guess."""
     try:
         root = yaml.compose(text)
     except yaml.YAMLError:
-        return out
-    if not isinstance(root, yaml.MappingNode):
-        return out
-    for k, v in root.value:
-        if getattr(k, "value", None) != "jobs" or not isinstance(v, yaml.MappingNode):
-            continue
-        for jk, jv in v.value:
-            job = getattr(jk, "value", None)
-            if not isinstance(job, str):
+        return None
+    out: dict[int, tuple[str, set[str]]] = {}
+
+    def walk(start: yaml.Node, job: str | None) -> None:
+        seen: set[int] = set()
+        stack = [start]
+        while stack:
+            node = stack.pop()
+            if id(node) in seen:
                 continue
-            seen: set[int] = set()
-            stack = [jv]
-            while stack:
-                node = stack.pop()
-                if id(node) in seen:
-                    continue
-                seen.add(id(node))
-                if isinstance(node, yaml.MappingNode):
-                    for ck, cv in node.value:
-                        if getattr(ck, "value", None) == "uses" and isinstance(cv, yaml.ScalarNode):
-                            out.setdefault(cv.start_mark.line + 1, set()).add(job)
-                        stack += [ck, cv]
-                elif isinstance(node, yaml.SequenceNode):
-                    stack += node.value
+            seen.add(id(node))
+            if isinstance(node, yaml.MappingNode):
+                for ck, cv in node.value:
+                    if (getattr(ck, "value", None) == "uses" and isinstance(cv, yaml.ScalarNode)
+                            and isinstance(cv.value, str)):
+                        _, jobs = out.setdefault(cv.start_mark.line + 1, (cv.value, set()))
+                        if job is not None:
+                            jobs.add(job)
+                    stack += [ck, cv]
+            elif isinstance(node, yaml.SequenceNode):
+                stack += node.value
+
+    if root is None:
+        return out
+    walk(root, None)
+    if isinstance(root, yaml.MappingNode):
+        for k, v in root.value:
+            if getattr(k, "value", None) != "jobs" or not isinstance(v, yaml.MappingNode):
+                continue
+            for jk, jv in v.value:
+                if isinstance(getattr(jk, "value", None), str):
+                    walk(jv, jk.value)
     return out
 
 
@@ -381,9 +395,17 @@ SHA_USED: set[tuple[str, str, str]] = set()
 
 
 def _check_sha_exception(key: str, rel: str, line_text: str, ref: str, where: str,
-                         jobs: set[str]) -> Finding | None | bool:
+                         jobs: set[str], parse_failed: bool = False) -> Finding | None | bool:
     """None = the SHA is permitted here. False = no exception covers this spot
     (the caller reports the ordinary refusal). A Finding = covered but wrong."""
+    if parse_failed:
+        covering = [k for k in SHA_EXCEPTIONS if k[0] == key and k[1] == rel]
+        if not covering:
+            return False
+        SHA_USED.update(covering)
+        return Finding("workflow does not parse - sha-pin cannot be judged, failing closed", where,
+                       f"{rel} is not valid YAML, so which job reaches {key}@{ref[:12]}… is unknown",
+                       "fix the workflow's YAML; a SHA is only allowed where its job is known.")
     named = sorted(j for j in jobs if (key, rel, j) in SHA_EXCEPTIONS)
     if not named:
         return False
@@ -503,13 +525,22 @@ def scan_repo(root: Path, m: Manifest, exceptions: dict[str, str]) -> list[Findi
                         f"`push:` trigger entirely if `pull_request` coverage is enough.",
                     ))
 
-        jobs_by_line: dict[int, set[str]] | None = None
+        # ⚠️ The governed `uses:` set is the UNION of the parse and the line
+        # regex. The parse sees what GitHub runs (a quoted value, a flow step
+        # `{uses: ...}`, a quoted `"uses":` key); the regex still catches a line
+        # in a file that does not parse, or in a non-YAML surface. Line numbers
+        # come from the parse marks, or from the ACTION group for the regex:
+        # USES_RE opens with `^\s*`, which under re.M swallows preceding blank
+        # lines, so mt.start() can sit lines above the `uses:` it matched.
+        parsed = _parsed_uses(text)
+        entries: dict[int, tuple[str, str]] = {}
+        for ln, (val, _) in sorted((parsed or {}).items()):
+            mv = USES_VALUE_RE.match(val.strip())
+            if mv:
+                entries[ln] = (mv.group(1), mv.group(2))
         for mt in USES_RE.finditer(text):
-            action, ref = mt.group(1), mt.group(2)
-            # ⚠️ Counted from the ACTION, not the match: USES_RE opens with `^\s*`,
-            # which under re.M swallows preceding blank lines, so mt.start() can sit
-            # lines above the `uses:` it matched and misname both the line and the job.
-            line = text[: mt.start(1)].count("\n") + 1
+            entries.setdefault(text[: mt.start(1)].count("\n") + 1, (mt.group(1), mt.group(2)))
+        for line, (action, ref) in sorted(entries.items()):
             where = f"{rel}:{line}"
 
             if action in m.sha_pinned:
@@ -551,10 +582,9 @@ def scan_repo(root: Path, m: Manifest, exceptions: dict[str, str]) -> list[Findi
             if SHA_RE.match(ref):
                 if is_consumer and rel.startswith(".github/workflows/"):
                     line_text = text.split("\n")[line - 1]
-                    if jobs_by_line is None:
-                        jobs_by_line = _jobs_reaching_uses(text)
+                    jobs = parsed[line][1] if parsed is not None and line in parsed else set()
                     verdict = _check_sha_exception(
-                        key, rel, line_text, ref, where, jobs_by_line.get(line, set()))
+                        key, rel, line_text, ref, where, jobs, parse_failed=parsed is None)
                     if verdict is None:
                         continue
                     if isinstance(verdict, Finding):

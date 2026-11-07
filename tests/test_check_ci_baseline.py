@@ -680,3 +680,54 @@ def test_a_moved_tag_tells_the_operator_to_review_before_repinning(tmp_path, tag
     assert run(*sha_build(tmp_path, {PROMOTE: WF_SHA}, sha_exc())) == VIOLATION
     err = capsys.readouterr().err
     assert "BEFORE adopting" in err and "hijack" in err and SHA2 in err and "c" * 40 in err
+
+
+# --- ⚠️ round 3, N1: governed `uses:` come from the PARSE, not a line regex ---
+#
+# Each form runs on GitHub and is invisible to a `^\s*-?\s*uses:\s*name@ref` regex.
+
+FORMS = {
+    "quoted value": ('      - uses: "actions/checkout@{ref}"  # v7', "{ref}"),
+    "flow step": ("      - {{uses: actions/checkout@{ref}}}  # v7", "{ref}"),
+    "quoted key": ('      - "uses": actions/checkout@{ref}  # v7', "{ref}"),
+}
+
+
+def _evil_wf(form: str, ref: str) -> str:
+    return WF_SHA + "  evil:\n    steps:\n" + FORMS[form][0].format(ref=ref) + "\n"
+
+
+@pytest.mark.parametrize("form", list(FORMS))
+def test_a_sha_pin_written_in_an_unusual_form_in_another_job_is_refused(tmp_path, tag_is, capsys, form):
+    tag_is(SHA2)
+    assert run(*sha_build(tmp_path, {PROMOTE: _evil_wf(form, SHA2)}, sha_exc())) == VIOLATION
+    assert "not a commit SHA" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("form", list(FORMS))
+def test_an_off_baseline_pin_in_an_unusual_form_is_refused(tmp_path, capsys, form):
+    wf = "jobs:\n  a:\n    steps:\n" + FORMS[form][0].format(ref="v6").replace("  # v7", "") + "\n"
+    assert run(*build(tmp_path, wf)) == VIOLATION
+    assert "pinned off the baseline" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("form", list(FORMS))
+def test_a_baseline_pin_in_an_unusual_form_passes(tmp_path, form):
+    wf = "jobs:\n  a:\n    steps:\n" + FORMS[form][0].format(ref="v7").replace("  # v7", "") + "\n"
+    assert run(*build(tmp_path, wf)) == OK
+
+
+@pytest.mark.parametrize("form", ["quoted value", "quoted key"])
+def test_the_excepted_sha_may_be_written_in_an_unusual_form_in_the_named_job(tmp_path, tag_is, form):
+    tag_is(SHA2)
+    wf = WF_SHA.replace(f"      - uses: actions/checkout@{SHA2}  # v7", FORMS[form][0].format(ref=SHA2))
+    assert run(*sha_build(tmp_path, {PROMOTE: wf}, sha_exc())) == OK
+
+
+# --- round 3, N2: a workflow that does not parse fails closed, by name --------
+
+def test_an_unparseable_workflow_refuses_the_excepted_sha_with_a_named_finding(tmp_path, tag_is, capsys):
+    tag_is(SHA2)
+    wf = WF_SHA + "  broken: [unclosed\n"
+    assert run(*sha_build(tmp_path, {PROMOTE: wf}, sha_exc())) == VIOLATION
+    assert "does not parse" in capsys.readouterr().err
