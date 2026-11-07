@@ -265,5 +265,23 @@ timeouts:
 #
 # ⚠️ `expires` is REQUIRED. An exception with no date is a permanent carve-out
 # wearing the costume of a temporary one.
+#
+# ONE EXCEPTION KIND ALLOWS A SHA. A job holding a high-value secret (a release
+# App key) may pin a governed action to a commit, for that named workflow and
+# job only:
+#
+#     exceptions:
+#       - kind: sha-pin
+#         action: actions/checkout
+#         workflow: .github/workflows/promote.yaml
+#         job: promote
+#         sha: <40-char commit of the tag below>
+#         tag: v7            # must equal this manifest's pin
+#         why: "<the reason>"
+#         expires: 2026-12-31
+#
+# The `uses:` line must end with `# <tag>`. The gate resolves the tag through
+# the GitHub API and fails closed if it cannot, so this manifest stays the one
+# source of WHICH version runs. Elsewhere a SHA is still refused.
 
 exceptions_file: .github/ci-baseline-exceptions.yml

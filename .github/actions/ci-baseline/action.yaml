@@ -43,6 +43,9 @@ runs:
         INPUT_MANIFEST: ${{ inputs.manifest }}
         INPUT_ROOT: ${{ inputs.root }}
         ACTION_PATH: ${{ github.action_path }}
+        # Resolves a sha-pin exception's tag; read-only, and the check fails
+        # closed without it if the unauthenticated API is rate-limited.
+        GITHUB_TOKEN: ${{ github.token }}
       run: |
         set -euo pipefail
         manifest="${INPUT_MANIFEST:-$ACTION_PATH/../../../ci-baseline.yaml}"

@@ -378,3 +378,124 @@ def test_tags_and_branches_push_with_pull_request_passes(tmp_path):
     """`branches:` alongside `tags:` must still be evaluated on the
     `branches:` key — declaring tags too does not change that."""
     assert run(*build(tmp_path, WF_PUSH_TAGS_AND_BRANCHES_WITH_PR)) == OK
+
+
+# --- ⚠️ the narrow SHA exception (kind: sha-pin) ------------------------------
+#
+# The checker refuses a SHA for every governed action. One recorded exception
+# may allow it for one action in one job of one workflow file; the baseline
+# stays the source of WHICH version, and the tag is resolved, not trusted.
+
+SHA2 = "b" * 40
+PROMOTE = ".github/workflows/promote.yml"
+WF_SHA = f"""
+jobs:
+  promote:
+    steps:
+      - uses: actions/checkout@{SHA2}  # v7
+  other:
+    steps:
+      - uses: actions/checkout@v7
+"""
+
+
+def sha_exc(**over) -> str:
+    f = {"kind": "sha-pin", "action": "actions/checkout", "workflow": PROMOTE, "job": "promote",
+         "sha": SHA2, "tag": "v7", "why": "holds the release key", "expires": FUTURE}
+    f.update(over)
+    f = {k: v for k, v in f.items() if v is not None}
+    return "exceptions:\n  - " + "\n    ".join(f"{k}: {v}" for k, v in f.items()) + "\n"
+
+
+def sha_build(tmp_path: Path, workflows: dict[str, str], exceptions: str) -> tuple[Path, Path]:
+    root, mpath = build(tmp_path, "jobs: {}\n", exceptions=exceptions)
+    (root / ".github/workflows/ci.yml").unlink()
+    for rel, text in workflows.items():
+        (root / rel).write_text(text)
+    return root, mpath
+
+
+@pytest.fixture
+def tag_is(monkeypatch):
+    def set_(sha: str | None, calls: list | None = None):
+        def fake(action, tag):
+            if calls is not None:
+                calls.append((action, tag))
+            if sha is None:
+                raise RuntimeError("GitHub API unreachable")
+            return sha
+        monkeypatch.setattr(gate, "resolve_tag_commit", fake)
+    return set_
+
+
+def test_a_sha_pin_is_allowed_in_the_named_job(tmp_path, tag_is, capsys):
+    calls: list = []
+    tag_is(SHA2, calls)
+    assert run(*sha_build(tmp_path, {PROMOTE: WF_SHA}, sha_exc())) == OK
+    assert calls == [("actions/checkout", "v7")], "the tag must be resolved, not trusted"
+    assert "at the declared baseline" in capsys.readouterr().err
+
+
+def test_a_sha_pin_in_another_job_of_the_same_workflow_is_refused(tmp_path, tag_is, capsys):
+    tag_is(SHA2)
+    wf = WF_SHA + f"  third:\n    steps:\n      - uses: actions/checkout@{SHA2}  # v7\n"
+    assert run(*sha_build(tmp_path, {PROMOTE: wf}, sha_exc())) == VIOLATION
+    err = capsys.readouterr().err
+    assert "not a commit SHA" in err and f"{PROMOTE}:11" in err
+
+
+def test_a_sha_pin_in_another_workflow_is_refused(tmp_path, tag_is, capsys):
+    tag_is(SHA2)
+    wfs = {PROMOTE: WF_SHA, ".github/workflows/ci.yml": WF_SHA}
+    assert run(*sha_build(tmp_path, wfs, sha_exc())) == VIOLATION
+    assert ".github/workflows/ci.yml:" in capsys.readouterr().err
+
+
+def test_a_sha_that_is_not_the_tags_commit_is_refused(tmp_path, tag_is, capsys):
+    tag_is("c" * 40)
+    assert run(*sha_build(tmp_path, {PROMOTE: WF_SHA}, sha_exc())) == VIOLATION
+    assert "not the commit of its tag" in capsys.readouterr().err
+
+
+def test_an_unresolvable_tag_fails_closed_with_a_named_reason(tmp_path, tag_is, capsys):
+    tag_is(None)
+    assert run(*sha_build(tmp_path, {PROMOTE: WF_SHA}, sha_exc())) == VIOLATION
+    err = capsys.readouterr().err
+    assert "failing closed" in err and "GitHub API unreachable" in err
+
+
+def test_a_tag_that_differs_from_the_baseline_pin_is_refused(tmp_path, tag_is, capsys):
+    tag_is(SHA2)
+    wf = WF_SHA.replace("# v7", "# v6")
+    assert run(*sha_build(tmp_path, {PROMOTE: wf}, sha_exc(tag="v6"))) == VIOLATION
+    assert "differs from the baseline pin" in capsys.readouterr().err
+
+
+def test_an_expired_sha_exception_stops_working(tmp_path, tag_is, capsys):
+    tag_is(SHA2)
+    assert run(*sha_build(tmp_path, {PROMOTE: WF_SHA}, sha_exc(expires=PAST))) == VIOLATION
+    err = capsys.readouterr().err
+    assert "EXPIRED" in err and "not a commit SHA" in err
+
+
+@pytest.mark.parametrize("field", ["action", "workflow", "job", "sha", "tag", "why", "expires"])
+def test_a_sha_exception_missing_any_field_is_rejected(tmp_path, tag_is, capsys, field):
+    tag_is(SHA2)
+    assert run(*sha_build(tmp_path, {PROMOTE: WF_SHA}, sha_exc(**{field: None}))) == VIOLATION
+    err = capsys.readouterr().err
+    assert "incomplete" in err and field in err
+    assert "not a commit SHA" in err, "an incomplete exception must not license anything"
+
+
+def test_a_sha_pin_without_the_version_comment_is_refused(tmp_path, tag_is, capsys):
+    tag_is(SHA2)
+    wf = WF_SHA.replace("  # v7", "")
+    assert run(*sha_build(tmp_path, {PROMOTE: wf}, sha_exc())) == VIOLATION
+    assert "trailing version comment" in capsys.readouterr().err
+
+
+def test_a_different_sha_than_the_recorded_one_is_refused(tmp_path, tag_is, capsys):
+    tag_is(SHA2)
+    wf = WF_SHA.replace(SHA2, "d" * 40)
+    assert run(*sha_build(tmp_path, {PROMOTE: wf}, sha_exc())) == VIOLATION
+    assert "differs from the recorded exception" in capsys.readouterr().err

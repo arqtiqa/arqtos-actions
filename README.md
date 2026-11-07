@@ -62,6 +62,8 @@ Pin the **moving major tag** `@v1` — not `@main`, and not an exact SHA.
 
 ⚠️ An action is governed **only when two or more repositories need it.** A single-consumer action stays local and is ignored by the gate — its absence from the manifest is a statement, not an omission. Do not add one "for completeness": a name in that file reads as governed, and the gate would start enforcing a version on the one repository entitled to choose it.
 
+⚠️ **A SHA is refused everywhere except one recorded spot.** A consumer's exceptions file may carry a `kind: sha-pin` entry (action, workflow, job, sha, tag, why, expires) for a job that holds a high-value secret. It permits a commit SHA for that one action in that one job of that one workflow, the `uses:` line must end `# <tag>`, `tag` must equal the manifest pin, and the gate resolves the tag through the GitHub API and **fails closed** if it cannot. The format is in [`ci-baseline.yaml`](ci-baseline.yaml).
+
 ## Actions
 
 | action | purpose |
